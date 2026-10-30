@@ -16,7 +16,8 @@ file records what we measured, what the causes were, what changed in the runtime
 | hash tracker (49a8b76) | 8-19 fps | ~10 fps | reached the world |
 | census skip (e91c92c) | 17-20 fps | - | |
 | no write watch, THP (8e5429a) | 37-41 fps | 20-27 fps | intro and loading at a locked 60 |
-| **copy mode (2bd136b)** | **60 fps** | **60 fps** | pacing-bound; world tested standing in the opening cave |
+| copy mode (2bd136b) | 60 fps | 60 fps cave, 45-47 fps outdoors | outdoors CPU-bound: render thread 100% busy |
+| **write watch + freezing in copy mode (3a4f4fa)** | **60 fps** | **55 fps standing, 49 walking outdoors** | Great Sky Island |
 
 Run with `TOTK_TRACE=perf` and nothing else: every Wine default below is chosen automatically (`wine_get_version` in
 ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the 8e5429a behaviour for A/B runs.
@@ -59,6 +60,13 @@ ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the
    ~0.2 MiB written back a frame, tracking 0.6 ms, write-watch queries 0.8 ms, replay 3-4 ms, 60 fps.
    `amdgpu_cs_ioctl` fell from ~60% to 2.8% of the submit thread; its top kernel cost is now `do_pagemap_scan`
    (the write watch, 14%). Same scene with `TOTK_MEMORY=import`: 27-31 fps.
+8. **Outdoors copy mode was CPU-bound, and hash mode had switched freezing off.** On Great Sky Island fix7 ran at
+   45-47 fps with the render thread 100% busy (replay 10.6 ms). `TOTK_DIRTY` auto was still hash under Wine, which
+   sets `freeze_idle` to 0, so every write-watch query scanned ~975 MiB a frame (`do_pagemap_scan` 13% of the thread).
+   Copy mode imports nothing, so it now uses the exact write watch and freezing: 36 queries over 82 MiB, 0.47 ms,
+   1 GiB frozen; 55 fps standing, 49 walking. The recorder thread is worth +1.7 ms a frame even with its spin
+   (`TOTK_VK_RECORDER=ab`). Wine's ucrtbase memcmp is a scalar loop at 5.7% of the render thread; the exe now
+   defines its own (`runtime/crt_fast.c`).
 
 ## What changed in the runtime
 
@@ -72,12 +80,15 @@ ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the
 | 8e5429a | under Wine the heap and alias reservations have no write watch: THP back the heap, the hash tracker covers every import, other pages read as unwritten | `TOTK_WRITE_WATCH=auto\|on\|off` (environment only) |
 | 93e9b82 + follow-up | import chunks, off by default after finding 6 | `TOTK_IMPORT_CHUNK=0\|2..4096` |
 | 2bd136b | copy mode, auto under Wine; the reservations keep their write watch in it | `TOTK_MEMORY=copy` |
+| 3a4f4fa | copy mode uses the write watch, not hashes, so idle regions freeze | `TOTK_DIRTY` |
+| 1e426f5 | memcmp defined in the exe (AVX2) instead of Wine's scalar one | |
 
 Windows behaviour is unchanged by default: writewatch, preemption on, write watch on, no chunks.
 
 ## Next steps
 
-1. Test copy mode moving outdoors, in combat, through fast travel and menus (only the opening cave so far).
+1. Outdoors the render thread is still over 16.7 ms (18 standing, ~20 walking): the replay (~9 ms) is the largest
+   part. Combat, fast travel and busy areas are untested.
 2. If the write-back MiB grows, absorb copy-mode write-backs so their pages don't sync back into the mirror
    (`ponytail:` note in vk_memory.c `stage_done`).
 3. Superseded unless copy mode falls short: the placed heap (needs a patched winevulkan shipped with the game,
