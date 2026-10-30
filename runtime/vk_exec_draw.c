@@ -69,6 +69,10 @@ typedef struct {
 } ViewKey;
 _Static_assert(sizeof(ViewKey) == 40, "ViewKey is hashed as bytes: no padding");
 typedef struct { uint64_t addr, size; } Range;
+// Under Wine every Vulkan call is a unix call, and a draw allocated a set at 0.7 draws in 1: alloc_set takes them in
+// batches. A batch left over when its slot is taken for another layout stays unused in the pool until cb_done resets it.
+#define SET_BATCH 8
+#define SET_SLOTS 16
 typedef struct {
     Chunk *chunks;
     int nchunks, cchunks;
@@ -76,6 +80,9 @@ typedef struct {
     int npools, cpools;
     Range *written;
     int nwritten, cwritten;
+    // Sets allocated ahead, SET_BATCH at a time per layout (alloc_set); slots taken round robin.
+    struct { VkDescriptorSetLayout l; int n; VkDescriptorSet s[SET_BATCH]; } sets[SET_SLOTS];
+    int next_slot;
 } CbRes;
 
 static CbRes *cur;
@@ -1208,14 +1215,23 @@ static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int sto
 static VkDescriptorSet alloc_set(VkExec *ex, VkDescriptorSetLayout layout) {
     CbRes *r = cb_res(ex);
     VkCtx *c = vk_ctx();
+    int k = 0;
+    while (k < SET_SLOTS && r->sets[k].l != layout) k++;
+    if (k < SET_SLOTS && r->sets[k].n) return r->sets[k].s[--r->sets[k].n];
+    if (k == SET_SLOTS) k = r->next_slot, r->next_slot = (k + 1) % SET_SLOTS, r->sets[k].l = layout;
+    VkDescriptorSetLayout ls[SET_BATCH];
+    for (int i = 0; i < SET_BATCH; i++) ls[i] = layout;
     for (int attempt = 0; attempt < 2; attempt++) {
         if (r->npools) {
             VkDescriptorSetAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-                                              .descriptorPool = r->pools[r->npools - 1], .descriptorSetCount = 1,
-                                              .pSetLayouts = &layout};
-            VkDescriptorSet set;
-            VkResult res = vkAllocateDescriptorSets(c->device, &ai, &set);
-            if (res == VK_SUCCESS) return set;
+                                              .descriptorPool = r->pools[r->npools - 1], .descriptorSetCount = SET_BATCH,
+                                              .pSetLayouts = ls};
+            VkResult res = vkAllocateDescriptorSets(c->device, &ai, r->sets[k].s);
+            if (res == VK_SUCCESS) {
+                r->sets[k].n = SET_BATCH - 1;
+                return r->sets[k].s[SET_BATCH - 1];
+            }
+            r->sets[k].n = 0;
             if (res != VK_ERROR_OUT_OF_POOL_MEMORY && res != VK_ERROR_FRAGMENTED_POOL) rt_fatal("vk: descriptor set allocation failed (%d)", (int)res);
         }
         static const VkDescriptorPoolSize sizes[] = {
@@ -1457,11 +1473,11 @@ static int bind_sig(const VkExec *ex, const VkPipeInfo *info) {
 
 // Writes allocated set s from its packed descriptors d: through the layout's update template, or with the write
 // structs w[i0..i1) when it has none.
-static void write_set(const VkPipeInfo *info, uint32_t s, VkDescriptorSet set, const VkDescSlot *d, VkWriteDescriptorSet *w,
-                      uint32_t i0, uint32_t i1) {
+static void write_set(VkExec *ex, const VkPipeInfo *info, uint32_t s, VkDescriptorSet set, const VkDescSlot *d,
+                      uint32_t dbytes, VkWriteDescriptorSet *w, uint32_t i0, uint32_t i1) {
     if (i1 == i0) return;
     if (info->tpl[s]) {
-        vk_pipeline_update_tpl_fn()(vk_ctx()->device, set, info->tpl[s], d);
+        rec_update_tpl(vk_pipeline_update_tpl_fn(), ex->cb, vk_ctx()->device, set, info->tpl[s], d, dbytes);
         return;
     }
     for (uint32_t k = i0; k < i1; k++) w[k].dstSet = set;
@@ -1602,14 +1618,14 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
             }
         } else if (!gfx || s > 1) {
             VkDescriptorSet set = alloc_set(ex, s ? info->set_layout1 : info->set_layout);
-            write_set(info, s, set, ds, w, i0, i1);
+            write_set(ex, info, s, set, ds, dbytes, w, i0, i1);
             vkCmdBindDescriptorSets(ex->cb, info->bind_point, info->layout, s, 1, &set, 0, NULL);
         } else {
             VkDescriptorSetLayout sl = s ? info->set_layout1 : info->set_layout;
             VkDescriptorSet set = B.ds_last[s];
             if (!set || B.ds_last_layout[s] != sl || DS.n[s] != dbytes || memcmp(DS.sig[s], ds, dbytes)) {
                 set = alloc_set(ex, sl);
-                write_set(info, s, set, ds, w, i0, i1);
+                write_set(ex, info, s, set, ds, dbytes, w, i0, i1);
                 B.ds_last[s] = set, B.ds_last_layout[s] = sl, DS.n[s] = dbytes;
                 memcpy(DS.sig[s], ds, dbytes);
                 BS.set_new++;
