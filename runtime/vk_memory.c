@@ -52,7 +52,8 @@ typedef struct PoolRec {
     uint64_t lo, size;                 // GPU address range of the pool
     uint64_t import_lo, import_hi;     // POOL_IMPORT: the imported host range (aligned outwards)
     VkBuffer buf;
-    VkDeviceMemory mem;                // POOL_IMPORT
+    VkDeviceMemory mem;                // POOL_IMPORT without a chunk
+    struct IChunk *chunk;              // POOL_IMPORT: the import chunk its buffer is bound into, or NULL
     VmaAllocation alloc;               // POOL_PHYS
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
     uint64_t npages;
@@ -91,6 +92,116 @@ static PoolRec **phys_list;            // physical pools by key, for MapVirtual 
 static int nphys, cap_phys;
 static long n_imports, n_import_failures;
 static PFN_vkGetMemoryHostPointerPropertiesEXT p_host_props;
+
+// ---------------------------------------------------------------- import chunks (TOTK_IMPORT_CHUNK)
+// amdgpu validates every userptr BO of a command submission at every submission (amdgpu_cs_ioctl:
+// amdgpu_ttm_tt_get_user_pages, then the reservation and GTT bookkeeping of each BO). TotK creates about 1570 CPU-visible
+// pools in the world, so with one import each that per-BO work alone cost 15-20 ms a frame on a Z1 under Proton. With
+// TOTK_IMPORT_CHUNK=<MiB> (auto: 128 under Wine, 0 on Windows), a pool that lies in the committed heap inside one
+// aligned window of that size gets its buffer bound into one import of the whole window (clipped to the heap's end when
+// the chunk is made) at its offset; the buffer still covers [import_lo, import_hi), so spans and mirrors keep their
+// offsets. A pool that crosses a window edge, or lies past a chunk made while the heap was shorter, keeps its own
+// import. A chunk lives until its last pool's buffer is destroyed (destroy_rec, after the GPU is done with that pool).
+typedef struct IChunk { uint64_t lo, hi; VkDeviceMemory mem; uint32_t type; long refs; } IChunk;
+static IChunk **ichunks;               // ich_lock
+static int nich, cich;
+static SRWLOCK ich_lock = SRWLOCK_INIT;
+static uint64_t ichunk_bytes = UINT64_MAX;   // 0: off
+static long n_chunked, n_chunks;
+static uint64_t bad[64];               // ich_lock: windows whose chunk import failed
+static int nbad;
+
+static uint64_t chunk_bytes(void) {
+    if (ichunk_bytes == UINT64_MAX) {
+        const char *e = cfg_value("TOTK_IMPORT_CHUNK");
+        int wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != NULL;
+        uint64_t mib = strcmp(e, "auto") ? strtoull(e, NULL, 0) : wine ? 128 : 0;
+        uint64_t b = 0;
+        if (mib) for (b = 2u << 20; b < (mib << 20) && b < (1ull << 32); b <<= 1) {}   // a power of two, 2 MiB..4 GiB
+        ichunk_bytes = b;
+        rt_log("vk: import chunks %s%llu MiB (%s)", b ? "" : "off, ", (unsigned long long)(b >> 20),
+               strcmp(e, "auto") ? "TOTK_IMPORT_CHUNK" : wine ? "auto, Wine" : "auto, Windows");
+    }
+    return ichunk_bytes;
+}
+
+static int memory_type(const VkCtx *c, uint32_t bits, VkMemoryPropertyFlags want);
+
+// The chunk over [lo, hi), made if needed; NULL when the range does not fit one. ich_lock held exclusively.
+static IChunk *chunk_for(VkCtx *c, uint64_t lo, uint64_t hi) {
+    uint64_t cb = chunk_bytes();
+    const RtGuestLayout *g = mem_layout();
+    uint64_t heap_end = mem_heap_end();
+    if (!cb || lo < g->heap.base || hi > heap_end) return NULL;
+    uint64_t wlo = lo & ~(cb - 1), whi = wlo + cb;
+    if (hi > whi) return NULL;
+    if (wlo < g->heap.base) wlo = g->heap.base;
+    for (int i = 0; i < nich; i++)
+        if (ichunks[i]->lo <= lo && hi <= ichunks[i]->hi && ichunks[i]->lo >= (lo & ~(cb - 1))) return ichunks[i];
+    for (int i = 0; i < nich; i++)
+        if (ichunks[i]->lo == wlo) return NULL;   // a shorter chunk of this window: the pool imports alone
+    for (int i = 0; i < nbad; i++)
+        if (bad[i] == wlo) return NULL;           // the window did not import before
+    if (whi > heap_end) whi = heap_end;
+    VkMemoryHostPointerPropertiesEXT hp = {.sType = VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+    if (!p_host_props || p_host_props(c->device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                      (void *)(uintptr_t)wlo, &hp) != VK_SUCCESS || !hp.memoryTypeBits)
+        return NULL;
+    int type = memory_type(c, hp.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (type < 0) return NULL;
+    mem_thaw(wlo, whi - wlo);   // the import may need write access to the pages
+    VkImportMemoryHostPointerInfoEXT im = {.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT,
+                                           .handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT,
+                                           .pHostPointer = (void *)(uintptr_t)wlo};
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .pNext = &im, .allocationSize = whi - wlo,
+                               .memoryTypeIndex = (uint32_t)type};
+    VkDeviceMemory mem;
+    VkResult res = vkAllocateMemory(c->device, &ai, NULL, &mem);
+    if (res != VK_SUCCESS) {
+        rt_log("vk: import chunk %#llx+%#llx failed (%d): its pools import alone", (unsigned long long)wlo,
+               (unsigned long long)(whi - wlo), (int)res);
+        if (nbad < (int)(sizeof bad / sizeof *bad)) bad[nbad++] = wlo;
+        return NULL;
+    }
+    IChunk *k = calloc(1, sizeof *k);
+    if (!k) rt_fatal("vk: out of memory for an import chunk");
+    *k = (IChunk){wlo, whi, mem, (uint32_t)type, 0};
+    if (nich == cich) grow((void **)&ichunks, &cich, sizeof *ichunks);
+    ichunks[nich++] = k;
+    mem_import_floor(whi);
+    long n = InterlockedIncrement(&n_chunks);
+    if (n <= 16 || !(n & (n - 1)))
+        rt_log("vk: import chunk %ld: %#llx+%#llx", n, (unsigned long long)wlo, (unsigned long long)(whi - wlo));
+    return k;
+}
+
+// Binds r->buf into a chunk; 0 if no chunk takes it.
+static int chunk_bind(VkCtx *c, PoolRec *r) {
+    if (!chunk_bytes()) return 0;
+    VkMemoryRequirements req;
+    vkGetBufferMemoryRequirements(c->device, r->buf, &req);
+    AcquireSRWLockExclusive(&ich_lock);
+    IChunk *k = chunk_for(c, r->import_lo, r->import_hi);
+    uint64_t off = k ? r->import_lo - k->lo : 0;
+    int ok = k && (req.memoryTypeBits >> k->type & 1) && !(off % (req.alignment ? req.alignment : 1)) &&
+             off + req.size <= k->hi - k->lo && vkBindBufferMemory(c->device, r->buf, k->mem, off) == VK_SUCCESS;
+    if (ok) k->refs++, r->chunk = k;
+    ReleaseSRWLockExclusive(&ich_lock);
+    if (ok) InterlockedIncrement(&n_chunked);
+    return ok;
+}
+
+static void chunk_release(VkCtx *c, IChunk *k) {
+    AcquireSRWLockExclusive(&ich_lock);
+    int last = --k->refs == 0;
+    if (last)
+        for (int i = 0; i < nich; i++)
+            if (ichunks[i] == k) { ichunks[i] = ichunks[--nich]; break; }
+    ReleaseSRWLockExclusive(&ich_lock);
+    if (!last) return;
+    vkFreeMemory(c->device, k->mem, NULL);
+    free(k);
+}
 
 static VkBufferUsageFlags pool_usage(const VkCtx *c) {
     VkBufferUsageFlags u = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
@@ -135,6 +246,10 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     if ((res = vkCreateBuffer(c->device, &bi, NULL, &r->buf)) != VK_SUCCESS) {
         rt_log("vk: pool %#llx: vkCreateBuffer for the import failed (%d)", (unsigned long long)addr, (int)res);
         return 0;
+    }
+    if (chunk_bind(c, r)) {
+        InterlockedIncrement(&n_imports);
+        return 1;
     }
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(c->device, r->buf, &req);
@@ -235,6 +350,7 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->mbuf) vmaDestroyBuffer(c->vma, r->mbuf, r->malloc_);
     if (r->buf) vkDestroyBuffer(c->device, r->buf, NULL);
     if (r->mem) vkFreeMemory(c->device, r->mem, NULL);
+    if (r->chunk) chunk_release(c, r->chunk);
     if (r->alloc) vmaFreeMemory(c->vma, r->alloc);
     free(r->pt);
     free(r);

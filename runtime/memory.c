@@ -50,6 +50,7 @@ static RtGuestLayout L;
 static uint64_t mods_lo, mods_hi;   // fixed module window
 static SRWLOCK lock = SRWLOCK_INIT;
 static uint64_t heap_size, alias_bytes;
+static volatile uint64_t import_floor;   // mem_import_floor: the end of the highest import chunk (vk_memory.c)
 static uint8_t *alias_pages;        // 1 per mapped 4 KiB page of the alias region
 typedef struct { uint64_t dst, src, size; } StackMap;
 static StackMap stack_maps[MAX_STACK_MAPS];
@@ -320,6 +321,13 @@ void mem_init(void) {
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
+
+uint64_t mem_heap_end(void) { return L.heap.base + __atomic_load_n(&heap_size, __ATOMIC_RELAXED); }
+
+void mem_import_floor(uint64_t hi) {
+    for (uint64_t o = __atomic_load_n(&import_floor, __ATOMIC_RELAXED); hi > o;)
+        if (__atomic_compare_exchange_n(&import_floor, &o, hi, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) break;
+}
 
 // Adapted from LAS Recomp runtime/platform/windows.c:40-63 @ da35b83 (MIT, Copyright (c) 2026 Peiikai): GetWriteWatch
 // with the reset flag. A range inside one watched reservation (stack and heap block, or alias region) only.
@@ -638,7 +646,12 @@ uint32_t mem_set_heap_size(uint64_t size, uint64_t *addr) {
         return R_INVALID_STATE;
     }
     if (size > heap_size) commit(L.heap.base + heap_size, size - heap_size, "heap");
-    if (size < heap_size) decommit(L.heap.base + size, heap_size - size, "heap");
+    if (size < heap_size) {
+        if (L.heap.base + size < __atomic_load_n(&import_floor, __ATOMIC_RELAXED))
+            rt_log("memory: SetHeapSize %#llx decommits heap pages under a live import chunk (TOTK_IMPORT_CHUNK=0 avoids "
+                   "chunks)", (unsigned long long)size);
+        decommit(L.heap.base + size, heap_size - size, "heap");
+    }
     heap_size = size;
     ReleaseSRWLockExclusive(&lock);
     if (addr) *addr = L.heap.base;
