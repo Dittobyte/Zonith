@@ -411,10 +411,18 @@ static VOID CALLBACK hash_cb(PTP_CALLBACK_INSTANCE inst, PVOID ctx, PTP_WORK w) 
 
 static void hash_parallel(const uint64_t *addr, uint64_t *out, uint64_t n) {
     if (hash_helpers < 0) {
-        SYSTEM_INFO si;
-        GetSystemInfo(&si);
-        int h = (int)si.dwNumberOfProcessors / 4;   // the game itself keeps most threads busy on few cores
-        hash_helpers = h > 3 ? 3 : h;
+        // TOTK_DIRTY_HELPERS: auto, or 0..8 (under Wine every hand-off wakes pool threads through the wineserver)
+        const char *e = cfg_get("TOTK_DIRTY_HELPERS");
+        if (e && *e && strcmp(e, "auto")) {
+            int h = atoi(e);
+            hash_helpers = h < 0 ? 0 : h > 8 ? 8 : h;
+        } else {
+            SYSTEM_INFO si;
+            GetSystemInfo(&si);
+            int h = (int)si.dwNumberOfProcessors / 4;   // the game itself keeps most threads busy on few cores
+            hash_helpers = h > 3 ? 3 : h;
+        }
+        rt_log("memory: dirty hashing on the caller plus %d thread-pool helpers per large query", hash_helpers);
     }
     HashJob j = {addr, out, (LONG)n, 0};
     PTP_WORK w = hash_helpers ? CreateThreadpoolWork(hash_cb, &j, NULL) : NULL;

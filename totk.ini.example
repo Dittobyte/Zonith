@@ -59,6 +59,9 @@
 # hashed and compared, the rest uses GetWriteWatch) or auto (hash under Wine/Proton, whose write watch reports every
 # imported page as written once the GPU touches it; writewatch on Windows).
 # dirty = auto
+# Threads that help hash a large dirty-tracking query in hash mode: auto (a quarter of the cores, at most 3) or
+# 0 to 8 (0: the querying thread hashes alone).
+# dirty_helpers = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
 # Host zstd decoder in place of the game's (0 = the game's), and a check that decodes every call both ways and logs
