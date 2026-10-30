@@ -269,15 +269,18 @@ void mem_init(void) {
     // Wine registers a MEM_WRITE_WATCH reservation for userfaultfd write protection and marks it VM_NOHUGEPAGE, so its
     // memory never gets transparent huge pages, and amdgpu revalidates every imported page of it one PTE at a time at
     // every command submission (hmm_range_fault in amdgpu_cs_ioctl: 25-30 ms a frame on a Z1). TOTK_WRITE_WATCH
-    // (environment only: it is read before totk.ini) off reserves without the watch; auto does so under Wine unless
-    // TOTK_DIRTY=writewatch. The hash tracker then covers every imported page, the only memory the GPU and the texture
-    // paths read.
+    // (environment only: it is read before totk.ini) off reserves without the watch; auto does so under Wine when
+    // TOTK_MEMORY (environment, same reason) keeps imports (import, mirror, verify) and TOTK_DIRTY is not writewatch.
+    // The hash tracker then covers every imported page, the only memory the GPU and the texture paths read. Wine's
+    // default, copy mode (vk_memory.c), imports nothing and needs the exact write watch, so it keeps the watch.
     const char *(*wine_version)(void) =
         (const char *(*)(void))(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
-    char ww[16] = "", dd[16] = "";
+    char ww[16] = "", dd[16] = "", mm[16] = "";
     GetEnvironmentVariableA("TOTK_WRITE_WATCH", ww, sizeof ww);
     GetEnvironmentVariableA("TOTK_DIRTY", dd, sizeof dd);
-    no_watch = !strcmp(ww, "off") || (strcmp(ww, "on") && wine_version && strcmp(dd, "writewatch"));
+    GetEnvironmentVariableA("TOTK_MEMORY", mm, sizeof mm);
+    int imports = !strcmp(mm, "import") || !strcmp(mm, "mirror") || !strcmp(mm, "verify");
+    no_watch = !strcmp(ww, "off") || (strcmp(ww, "on") && wine_version && imports && strcmp(dd, "writewatch"));
     DWORD wflag = no_watch ? 0 : MEM_WRITE_WATCH;
     // Stack and heap block, then the alias region above it, both searched below the module window.
     uint64_t low = 0, alias = 0;

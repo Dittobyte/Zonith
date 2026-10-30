@@ -92,6 +92,8 @@ static PoolRec **phys_list;            // physical pools by key, for MapVirtual 
 static int nphys, cap_phys;
 static long n_imports, n_import_failures;
 static PFN_vkGetMemoryHostPointerPropertiesEXT p_host_props;
+// TOTK_MEMORY=copy ("VRAM mirror" below): CPU-visible pools are not imported; the GPU only sees their mirrors.
+static int copy_mode;
 
 // ---------------------------------------------------------------- import chunks (TOTK_IMPORT_CHUNK)
 // amdgpu validates every userptr BO of a command submission at every submission (amdgpu_cs_ioctl:
@@ -384,8 +386,13 @@ int vk_pool_init(pool_t *p) {
     } else {
         r->kind = POOL_IMPORT;
         mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
-        ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
-        if (ok && mem_dirty_hash()) {   // the GPU's access to the import breaks Wine's write watch over it (memory.c)
+        if (copy_mode) {   // the mirror comes at the first GPU use (vk_mem_use), an import only if it is refused
+            uint64_t al = c->min_imported_host_alignment ? c->min_imported_host_alignment : 0x1000;
+            r->import_lo = (uintptr_t)p->mem & ~(al - 1);
+            r->import_hi = ((uintptr_t)p->mem + p->size + al - 1) & ~(al - 1);
+        }
+        ok = copy_mode || import_pool(c, r, (uintptr_t)p->mem, p->size);
+        if (ok && r->buf && mem_dirty_hash()) {   // the GPU's access to the import breaks Wine's write watch over it (memory.c)
             mem_dirty_track(r->import_lo, r->import_hi - r->import_lo, 1);
             r->dtracked = 1;
         }
@@ -535,7 +542,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
     int ok = 0;
-    if (r && (r->kind == POOL_IMPORT ? r->buf != VK_NULL_HANDLE : r->kind == POOL_PHYS)) {
+    if (r && (r->kind == POOL_IMPORT ? r->buf || copy_mode : r->kind == POOL_PHYS)) {
         int i = (int)(e - pool_index.e);
         if ((i == 0 || pool_index.maxhi[i - 1] <= e->lo) && (i + 1 == pool_index.n || pool_index.e[i + 1].lo >= e->hi)) {
             ResolveHit *h = rhit_slot(addr);
@@ -545,7 +552,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
             else h->base = r->lo, h->end = r->lo + r->size, h->alloc = r->alloc, h->pool = NULL;
         }
     }
-    if (r && r->kind == POOL_IMPORT && r->buf) {
+    if (r && r->kind == POOL_IMPORT && (r->buf || copy_mode)) {   // copy mode: VK_MEM_USE/PICK pick the buffer
         out->cls = rec_class(r);
         out->pool = r;
         out->buffer = r->buf;
@@ -1089,6 +1096,11 @@ static void dirty_frame(uint64_t frame) {
 //   at its fence the pages the CPU has not written since their sync are compared with guest memory.
 // A pool stays imported when its mirror would not fit the VRAM budget, its range is not write-watched, it overlaps
 // another pool or the allocation fails.
+// - TOTK_MEMORY=copy (auto under Wine): no pool is imported at its creation. A mirror (any GPU-readable memory, no
+//   budget check) is made at the first use, copies included, and the CPU fills it; later syncs memcpy the written pages
+//   into a staging buffer the prologue copies from; write-backs go through a staging buffer the completion thread copies
+//   into guest memory before the fence counts as done. A refused pool is imported then (copy_fallback). This removes
+//   amdgpu's per-submission revalidation of ~1570 userptr BOs under Proton, and the hashing, since nothing is imported.
 #define VERIFY_BYTES (4u << 20)
 #define VERIFY_SAMPLES 64
 #define VERIFY_LOG 16
@@ -1120,16 +1132,20 @@ static volatile LONG64 m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_misma
 
 static void mirror_mode(int discrete) {
     const char *e = cfg_value("TOTK_MEMORY");
-    int mode = discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify
-    const char *why = discrete ? "auto, discrete gpu" : "auto, uma";
+    // Under Wine auto is copy: amdgpu revalidates every host-pointer import at every submission (docs/proton.md).
+    int wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != NULL;
+    int mode = wine ? 3 : discrete ? 1 : 0;   // 0 import, 1 mirror, 2 verify, 3 copy
+    const char *why = wine ? "auto, Wine" : discrete ? "auto, discrete gpu" : "auto, uma";
     if (strcmp(e, "auto")) {
         if (!strcmp(e, "import")) mode = 0, why = "TOTK_MEMORY=import";
         else if (!strcmp(e, "mirror")) mode = 1, why = "TOTK_MEMORY=mirror";
         else if (!strcmp(e, "verify")) mode = 2, why = "TOTK_MEMORY=verify";
-        else rt_log("mem: TOTK_MEMORY=%s is not import, mirror, verify or auto: auto", e);
+        else if (!strcmp(e, "copy")) mode = 3, why = "TOTK_MEMORY=copy";
+        else rt_log("mem: TOTK_MEMORY=%s is not import, mirror, verify, copy or auto: auto", e);
     }
     vk_mirror_on = mode > 0;
     mirror_verify = mode == 2;
+    copy_mode = mode == 3;
     const char *g = cfg_get("TOTK_MIRROR_GAP");
     mirror_gap = g && *g ? atoi(g) : 2;
     if (mirror_gap < 0) mirror_gap = 0;
@@ -1140,8 +1156,10 @@ static void mirror_mode(int discrete) {
     // revalidates the whole import; hashed pages gain nothing from it either.
     freeze_idle = fi && *fi ? atoi(fi) : mem_dirty_hash() ? 0 : 60;
     if (freeze_idle < 0) freeze_idle = 0;
-    rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
-           mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
+    static const char *name[] = {"import", "mirror", "verify", "copy"};
+    rt_log("mem: mode %s (%s): %s", name[mode], why,
+           mode == 3 ? "no imports: pools the GPU uses get a mirror the CPU copies written pages into"
+           : mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
 }
 
 static void range_add(MRange **a, int *n, int *cap, PoolRec *r, uint64_t off, uint64_t size) {
@@ -1159,9 +1177,37 @@ static int range_cmp(const void *x, const void *y) {
     return a->off < b->off ? -1 : a->off > b->off;
 }
 
+// Copy mode: a staging buffer for one prologue's uploads or one submission's write-backs, freed at its fence after the
+// write-backs (c[]) went into guest memory. The completion thread runs that before the fence counts as done.
+typedef struct { uint64_t addr, off, size; } WbCopy;
+typedef struct { VkBuffer buf; VmaAllocation alloc; uint8_t *map; uint64_t used; int n; WbCopy c[]; } StageJob;
+
+static StageJob *stage_new(const MRange *a, int n) {
+    uint64_t total = 0;
+    for (int i = 0; i < n; i++) total += a[i].size;
+    StageJob *j = malloc(sizeof *j + (size_t)n * sizeof *j->c);
+    if (!j) rt_fatal("vk: out of memory");
+    j->used = 0, j->n = 0;
+    j->map = vk_staging(total, &j->buf, &j->alloc);
+    return j;
+}
+
+static void stage_done(void *arg) {   // completion thread
+    StageJob *j = arg;
+    VmaAllocator vma = vk_ctx()->vma;
+    if (j->n) vmaInvalidateAllocation(vma, j->alloc, 0, VK_WHOLE_SIZE);
+    // ponytail: the write-back marks its pages written for the write watch, so they sync back into the mirror once
+    // (same bytes); absorb them if the mirror line's write-back MiB gets large.
+    for (int i = 0; i < j->n; i++) memcpy((void *)(uintptr_t)j->c[i].addr, j->map + j->c[i].off, j->c[i].size);
+    vmaDestroyBuffer(vma, j->buf, j->alloc);
+    free(j);
+}
+
 // Records the ranges as one vkCmdCopyBuffer per pool, overlapping and adjacent ranges merged; to_mirror: buf -> mbuf,
-// else mbuf -> buf. Returns the commands recorded; adds what they move to *bytes and *copies.
-static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies) {
+// else mbuf -> buf. With a StageJob (copy mode) its staging buffer stands in for buf: uploads copy the guest bytes into
+// it now, write-backs are noted for stage_done. Returns the commands recorded; adds what they move to *bytes and *copies.
+static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint64_t *bytes, uint64_t *copies,
+                       StageJob *sj) {
     qsort(a, (size_t)n, sizeof *a, range_cmp);
     int rec = 0;
     for (int i = 0; i < n;) {
@@ -1181,10 +1227,24 @@ static int copy_ranges(VkCommandBuffer cb, MRange *a, int n, int to_mirror, uint
             mregions[k++] = (VkBufferCopy){lo, lo, hi - lo};
         }
         if (!k) continue;
-        if (to_mirror) vkCmdCopyBuffer(cb, r->buf, r->mbuf, (uint32_t)k, mregions);
+        for (int j = 0; j < k; j++) *bytes += mregions[j].size;
+        if (sj) {
+            for (int j = 0; j < k; j++) {
+                uint64_t lo = mregions[j].srcOffset, sz = mregions[j].size;
+                if (to_mirror) {
+                    memcpy(sj->map + sj->used, (const void *)(uintptr_t)(r->import_lo + lo), sz);
+                    mregions[j].srcOffset = sj->used;
+                } else {
+                    sj->c[sj->n++] = (WbCopy){r->import_lo + lo, sj->used, sz};
+                    mregions[j].dstOffset = sj->used;
+                }
+                sj->used += sz;
+            }
+            if (to_mirror) vkCmdCopyBuffer(cb, sj->buf, r->mbuf, (uint32_t)k, mregions);
+            else vkCmdCopyBuffer(cb, r->mbuf, sj->buf, (uint32_t)k, mregions);
+        } else if (to_mirror) vkCmdCopyBuffer(cb, r->buf, r->mbuf, (uint32_t)k, mregions);
         else vkCmdCopyBuffer(cb, r->mbuf, r->buf, (uint32_t)k, mregions);
         rec++;
-        for (int j = 0; j < k; j++) *bytes += mregions[j].size;
         *copies += (uint64_t)k;
     }
     return rec;
@@ -1216,7 +1276,7 @@ static void mirror_create(PoolRec *r) {
     uint64_t n = r->import_hi - r->import_lo;
     r->mstate = MS_REFUSED;
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
-    if (r->kind != POOL_IMPORT || !r->buf || !n) return;
+    if (r->kind != POOL_IMPORT || (!r->buf && !copy_mode) || !n) return;
     AcquireSRWLockShared(&pool_lock);
     int i = pidx_upper(&pool_index, r->lo) - 1;
     while (i >= 0 && pool_index.e[i].buf != r) i--;
@@ -1229,7 +1289,7 @@ static void mirror_create(PoolRec *r) {
     if (r1 >= SNAP_REGIONS) return refuse(r, MR_UNTRACKED, "outside the write-watched address space");
     uint64_t used, budget;
     int exact;
-    if (vk_mem_vram(&used, &budget, &exact) && used + n + budget / 8 > budget) {
+    if (!copy_mode && vk_mem_vram(&used, &budget, &exact) && used + n + budget / 8 > budget) {
         char why[128];
         snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the VRAM budget (%.0f of %.0f MiB in use)",
                  n / 1048576.0, used / 1048576.0, budget / 1048576.0);
@@ -1246,7 +1306,13 @@ static void mirror_create(PoolRec *r) {
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
                                   .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
-    VkResult res = vmaCreateBuffer(c->vma, &bi, &ai, &r->mbuf, &r->malloc_, NULL);
+    // Copy mode: any memory the GPU reads well (an APU's VRAM carve-out is small), mapped for the first copy.
+    if (copy_mode)
+        ai = (VmaAllocationCreateInfo){.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                                       .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                                VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    VkResult res = vmaCreateBuffer(c->vma, &bi, &ai, &r->mbuf, &r->malloc_, &info);
     if (res != VK_SUCCESS) {
         r->mbuf = VK_NULL_HANDLE, r->malloc_ = NULL;
         char why[96];
@@ -1263,7 +1329,10 @@ static void mirror_create(PoolRec *r) {
     ReleaseSRWLockExclusive(&pool_lock);
     r->acc_sub = msub;
     r->mstate = MS_ON;
-    range_add(&pend, &npend, &cpend, r, 0, n);
+    if (copy_mode) {   // nothing has used the new buffer yet: the CPU fills it
+        memcpy(info.pMappedData, (const void *)(uintptr_t)r->import_lo, n);
+        vmaFlushAllocation(c->vma, r->malloc_, 0, VK_WHOLE_SIZE);
+    } else range_add(&pend, &npend, &cpend, r, 0, n);
     mrep.first_n++, mrep.first_bytes += n;
     InterlockedIncrement64(&m_live_n);
     InterlockedAdd64(&m_live_bytes, (LONG64)n);
@@ -1344,16 +1413,32 @@ static void mirror_sync(PoolRec *r) {
     mrep.sync_t += qpc() - t0;
 }
 
+// Copy mode, replay thread: a pool refused a mirror (it overlaps another pool, say) is imported after all.
+static void copy_fallback(PoolRec *r) {
+    if (r->buf) return;
+    if (!import_pool(vk_ctx(), r, r->lo, r->size))
+        rt_fatal("vk: pool %#llx+%#llx has neither a mirror nor an import (TOTK_MEMORY=import may work)",
+                 (unsigned long long)r->lo, (unsigned long long)r->size);
+    if (mem_dirty_hash()) mem_dirty_track(r->import_lo, r->import_hi - r->import_lo, 1), r->dtracked = 1;
+    AcquireSRWLockExclusive(&pool_lock);
+    __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);   // resolve caches hold the null buffer
+    ReleaseSRWLockExclusive(&pool_lock);
+}
+
 void vk_mem_use(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
     if (r->mstate == MS_NONE) mirror_create(r);
-    if (r->mstate != MS_ON) return;
+    if (r->mstate != MS_ON) {
+        if (copy_mode) copy_fallback(r), sp->buffer = r->buf;
+        return;
+    }
     if (r->acc_sub != msub) mirror_sync(r);
     sp->buffer = r->mbuf;
 }
 
 void vk_mem_pick(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
+    if (r && copy_mode) return vk_mem_use(sp);   // no import to fall back on: a copy's first use makes the mirror too
     if (!r || r->mstate != MS_ON) return;
     if (r->acc_sub != msub) mirror_sync(r);
     sp->buffer = r->mbuf;
@@ -1448,11 +1533,13 @@ void vk_mem_mirror_begin(void) {
 
 int vk_mem_mirror_pending(void) { return npend; }
 
-void vk_mem_mirror_prologue(VkCommandBuffer cb) {
+void vk_mem_mirror_prologue(VkCommandBuffer cb, uint64_t fence) {
     if (!npend) return;
     mbarrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT,
              VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
-    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies);
+    StageJob *sj = copy_mode ? stage_new(pend, npend) : NULL;
+    copy_ranges(cb, pend, npend, 1, &mrep.upload_bytes, &mrep.upload_copies, sj);
+    if (sj) vmaFlushAllocation(vk_ctx()->vma, sj->alloc, 0, VK_WHOLE_SIZE), vk_completion_add(fence, stage_done, sj);
     mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
              VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     npend = 0;
@@ -1556,7 +1643,9 @@ int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
                  VK_ACCESS_2_TRANSFER_READ_BIT);
         for (int i = 0; i < nwbl; i++) wbl[i].r->wb_sub = msub;
         mrep.wb_ranges += (uint64_t)nwbl;
-        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies) + 2;
+        StageJob *sj = copy_mode ? stage_new(wbl, nwbl) : NULL;
+        rec += copy_ranges(cb, wbl, nwbl, 0, &mrep.wb_bytes, &mrep.wb_copies, sj) + 2;
+        if (sj) vk_completion_add(fence, stage_done, sj);
         mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                  VK_PIPELINE_STAGE_2_HOST_BIT | VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
