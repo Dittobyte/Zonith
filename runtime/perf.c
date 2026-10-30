@@ -129,10 +129,14 @@ static void ft_report(uint64_t now, const char *tag) {
                (unsigned long long)ft.over25, (unsigned long long)ft.over50, (unsigned long long)ft.over100);
         for (int i = 0; i < ft.nworst; i++) {
             const FtWorst *w = &ft.worst[i];
-            rt_log("frametime:   worst frame %llu: %.1f ms; shader translation %.1f, pipeline build %.1f, texture upload %.1f (astc %.1f), replay %.1f, fence/present wait %.1f, pacing %.1f",
+            // rest: the frame less the parts named here, mostly the game's own code on the render thread. ASTC is
+            // part of texture upload. The replay can run on another thread and overlap, so rest can be negative.
+            double named = (double)w->wait[PERF_XLATE] + w->wait[PERF_PIPE] + w->wait[PERF_TEX] + w->replay +
+                           w->wait[PERF_FENCE] + w->wait[PERF_DRAIN] + w->wait[PERF_PACE];
+            rt_log("frametime:   worst frame %llu: %.1f ms; shader translation %.1f, pipeline build %.1f, texture upload %.1f (astc %.1f), replay %.1f, fence/present wait %.1f, pacing %.1f, rest %.1f",
                    (unsigned long long)w->frame, w->ns / 1e6, w->wait[PERF_XLATE] / 1e6, w->wait[PERF_PIPE] / 1e6,
                    w->wait[PERF_TEX] / 1e6, w->wait[PERF_ASTC] / 1e6, w->replay / 1e6,
-                   (w->wait[PERF_FENCE] + w->wait[PERF_DRAIN]) / 1e6, w->wait[PERF_PACE] / 1e6);
+                   (w->wait[PERF_FENCE] + w->wait[PERF_DRAIN]) / 1e6, w->wait[PERF_PACE] / 1e6, (w->ns - named) / 1e6);
         }
     }
     memset(&ft, 0, sizeof ft);
