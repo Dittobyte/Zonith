@@ -383,6 +383,22 @@ static void bench(const RtModule *mods, int n) {
 }
 
 // Memory SVCs without modules: heap, physical memory in the alias region, a stack move, QueryMemory, GetInfo.
+// crt_fast.c memcmp against a byte loop: every length to 100 at every offset to 40, one differing byte anywhere.
+static void check_memcmp(void) {
+    static unsigned char a[160], b[160];
+    int bad = 0;
+    for (int n = 0; n <= 100 && !bad; n++)
+        for (int off = 0; off < 40 && !bad; off++)
+            for (int d = -1; d < n && !bad; d++) {
+                for (int i = 0; i < 160; i++) a[i] = b[i] = (unsigned char)(i * 37);
+                if (d >= 0) b[off + d] = (unsigned char)(a[off + d] + (d & 1 ? 1 : -1));
+                volatile int want = d < 0 ? 0 : (int)a[off + d] - (int)b[off + d];
+                int got = memcmp(a + off, b + off, (size_t)n);
+                bad = (got > 0) != (want > 0) || (got < 0) != (want < 0);
+            }
+    CHECK(!bad, "memcmp (crt_fast.c) disagrees with a byte loop");
+}
+
 static void check_memory(void) {
     const RtGuestLayout *g = mem_layout();
     RtMemoryInfo q;
@@ -462,6 +478,7 @@ static int selftest(void) {
     mem_kernel_free(k1, 0x200);
     CHECK(mem_kernel_alloc(0x200, 16) == k1, "a freed kernel-region block is not reused");
     check_memory();
+    check_memcmp();
 
     PROCESS_MEMORY_COUNTERS pmc = {.cb = sizeof pmc};
     if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc))
