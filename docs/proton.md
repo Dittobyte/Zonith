@@ -1,7 +1,9 @@
 # Running under Proton (Steam Deck class hardware)
 
 Goal: the Windows build of TotK Recomp runs well under Proton on Linux, not a native Linux port. The first test machine
-was a Ryzen Z1 Extreme handheld (RDNA 3 iGPU, RADV, Mesa 26.2.0-devel, SteamOS kernel 6.18, Proton 11.0-100). This
+was a Ryzen Z1 Extreme handheld; the target is playing on the go on a Lenovo Legion Go S. Windows itself is out of
+scope for this work: the build already runs there, and these changes need not keep Windows defaults or be Windows-safe.
+The test machine (RDNA 3 iGPU, RADV, Mesa 26.2.0-devel, SteamOS kernel 6.18, Proton 11.0-100). This
 file records what we measured, what the causes were, what changed in the runtime, and what is still open.
 
 ## Status (2026-10-29, branch `wine-dirty-tracking`)
