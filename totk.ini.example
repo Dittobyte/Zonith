@@ -63,8 +63,8 @@
 # 0 to 8 (0: the querying thread hashes alone). Under Wine auto is 0.
 # dirty_helpers = auto
 # Pools in the heap share host-memory imports of this many MiB (a power of two), so the GPU driver validates a few
-# imports per submission instead of one per pool: auto (128 under Wine, where amdgpu revalidates each import at every
-# submission; 0 on Windows), 0 (one import per pool) or 2 to 4096.
+# imports per submission instead of one per pool: auto (0 for now; under Wine 128 cut amdgpu's per-submission work but
+# a chunk over a protected guest page loses the device, see docs/proton.md), 0 (one import per pool) or 2 to 4096.
 # import_chunk = auto
 # TOTK_WRITE_WATCH (environment variable only, read before this file): auto (off under Wine, unless TOTK_DIRTY is
 # writewatch), on or off. Off reserves game memory without a write watch, which under Wine keeps it on huge pages.

@@ -97,7 +97,7 @@ static PFN_vkGetMemoryHostPointerPropertiesEXT p_host_props;
 // amdgpu validates every userptr BO of a command submission at every submission (amdgpu_cs_ioctl:
 // amdgpu_ttm_tt_get_user_pages, then the reservation and GTT bookkeeping of each BO). TotK creates about 1570 CPU-visible
 // pools in the world, so with one import each that per-BO work alone cost 15-20 ms a frame on a Z1 under Proton. With
-// TOTK_IMPORT_CHUNK=<MiB> (auto: 128 under Wine, 0 on Windows), a pool that lies in the committed heap inside one
+// TOTK_IMPORT_CHUNK=<MiB> (auto: 0 for now), a pool that lies in the committed heap inside one
 // aligned window of that size gets its buffer bound into one import of the whole window (clipped to the heap's end when
 // the chunk is made) at its offset; the buffer still covers [import_lo, import_hi), so spans and mirrors keep their
 // offsets. A pool that crosses a window edge, or lies past a chunk made while the heap was shorter, keeps its own
@@ -115,12 +115,15 @@ static uint64_t chunk_bytes(void) {
     if (ichunk_bytes == UINT64_MAX) {
         const char *e = cfg_value("TOTK_IMPORT_CHUNK");
         int wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != NULL;
-        uint64_t mib = strcmp(e, "auto") ? strtoull(e, NULL, 0) : wine ? 128 : 0;
+        // auto is off for now: under Wine a chunk over a guest-protected page (PROT_NONE guard pages, protect())
+        // makes amdgpu reject the next submission (hmm_range_fault -EFAULT, device lost); see docs/proton.md.
+        uint64_t mib = strcmp(e, "auto") ? strtoull(e, NULL, 0) : 0;
         uint64_t b = 0;
         if (mib) for (b = 2u << 20; b < (mib << 20) && b < (1ull << 32); b <<= 1) {}   // a power of two, 2 MiB..4 GiB
         ichunk_bytes = b;
         rt_log("vk: import chunks %s%llu MiB (%s)", b ? "" : "off, ", (unsigned long long)(b >> 20),
-               strcmp(e, "auto") ? "TOTK_IMPORT_CHUNK" : wine ? "auto, Wine" : "auto, Windows");
+               strcmp(e, "auto") ? "TOTK_IMPORT_CHUNK" : wine ? "auto, Wine: off until chunks avoid protected pages" :
+               "auto, Windows");
     }
     return ichunk_bytes;
 }

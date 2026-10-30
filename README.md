@@ -25,7 +25,7 @@ Report problems as issues, following [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Planned
 
-- Linux and the Steam Deck
+- Linux and the Steam Deck (the Windows build under Proton: progress and findings in [docs/proton.md](docs/proton.md))
 - Mods made for emulators: unpack a mod into a `mods` folder
 - Custom aspect ratios, including ultrawide
 - VRR
