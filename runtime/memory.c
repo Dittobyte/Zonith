@@ -81,6 +81,7 @@ static volatile uint8_t frz[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
 static uint32_t thaw_ms[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: GetTickCount of the last thaw request, 0 never
 static volatile LONG nfrz;
 static int dirty_hash;   // TOTK_DIRTY: imported pages are tracked by hashes (mem_dirty_track), set by mem_init
+static int no_watch;     // TOTK_WRITE_WATCH off: the reservations have no write watch; untracked pages read as unwritten
 static SRWLOCK frz_lock = SRWLOCK_INIT;
 static volatile LONG64 frz_count[4];   // freezes; thaws by a write fault, by mem_thaw, by a mapping change
 
@@ -264,13 +265,26 @@ void mem_init(void) {
     if (!reserve_at(RT_KERNEL_BASE, RT_KERNEL_SIZE, 0)) reexec_or_fail("the kernel region");
     if (!reserve_at(RT_HOSTFN_BASE, RT_HOSTFN_SIZE, 0)) reexec_or_fail("the host-function window");
 
+    // Wine registers a MEM_WRITE_WATCH reservation for userfaultfd write protection and marks it VM_NOHUGEPAGE, so its
+    // memory never gets transparent huge pages, and amdgpu revalidates every imported page of it one PTE at a time at
+    // every command submission (hmm_range_fault in amdgpu_cs_ioctl: 25-30 ms a frame on a Z1). TOTK_WRITE_WATCH
+    // (environment only: it is read before totk.ini) off reserves without the watch; auto does so under Wine unless
+    // TOTK_DIRTY=writewatch. The hash tracker then covers every imported page, the only memory the GPU and the texture
+    // paths read.
+    const char *(*wine_version)(void) =
+        (const char *(*)(void))(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
+    char ww[16] = "", dd[16] = "";
+    GetEnvironmentVariableA("TOTK_WRITE_WATCH", ww, sizeof ww);
+    GetEnvironmentVariableA("TOTK_DIRTY", dd, sizeof dd);
+    no_watch = !strcmp(ww, "off") || (strcmp(ww, "on") && wine_version && strcmp(dd, "writewatch"));
+    DWORD wflag = no_watch ? 0 : MEM_WRITE_WATCH;
     // Stack and heap block, then the alias region above it, both searched below the module window.
     uint64_t low = 0, alias = 0;
     for (uint64_t at = LOW_SEARCH_FROM; at + LOW_SIZE <= mods_lo && !low; at += GiB)
-        if (reserve_at(at, LOW_SIZE, MEM_WRITE_WATCH)) low = at;
+        if (reserve_at(at, LOW_SIZE, wflag)) low = at;
     if (!low) reexec_or_fail("a 6 GiB stack and heap block below 2^39");
     for (uint64_t at = align_up(low + LOW_SIZE, ALIAS_ALIGN); at + ALIAS_SIZE <= mods_lo && !alias; at += ALIAS_ALIGN)
-        if (reserve_at(at, ALIAS_SIZE, MEM_WRITE_WATCH)) alias = at;
+        if (reserve_at(at, ALIAS_SIZE, wflag)) alias = at;
     if (!alias) reexec_or_fail("a 64 GiB alias region below 2^39");
 
     AddVectoredExceptionHandler(1, thaw_handler);   // before the crash handler
@@ -291,8 +305,6 @@ void mem_init(void) {
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
     // Dirty tracking (see mem_dirty_track): hashes under Wine unless TOTK_DIRTY says otherwise.
-    const char *(*wine_version)(void) =
-        (const char *(*)(void))(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
     const char *d = cfg_value("TOTK_DIRTY");
     if (strcmp(d, "auto") && strcmp(d, "hash") && strcmp(d, "writewatch")) {
         rt_log("memory: TOTK_DIRTY=%s is not auto, hash or writewatch: auto", d);
@@ -301,9 +313,10 @@ void mem_init(void) {
     char why[64];
     if (strcmp(d, "auto")) snprintf(why, sizeof why, "TOTK_DIRTY=%s", d);
     else snprintf(why, sizeof why, "auto, %s%s", wine_version ? "Wine " : "Windows", wine_version ? wine_version() : "");
-    dirty_hash = !strcmp(d, "hash") || (!strcmp(d, "auto") && wine_version);
-    rt_log("memory: dirty tracking %s (%s)", dirty_hash ? "hash: imported pages by XXH3, other pages by write watch" :
-           "write watch", why);
+    dirty_hash = !strcmp(d, "hash") || (!strcmp(d, "auto") && wine_version) || no_watch;
+    rt_log("memory: dirty tracking %s (%s)", !dirty_hash ? "write watch" : no_watch ?
+           "hash: imported pages by XXH3, no write watch on the other pages (TOTK_WRITE_WATCH)" :
+           "hash: imported pages by XXH3, other pages by write watch", why);
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
@@ -421,6 +434,7 @@ static void hash_parallel(const uint64_t *addr, uint64_t *out, uint64_t n) {
             GetSystemInfo(&si);
             int h = (int)si.dwNumberOfProcessors / 4;   // the game itself keeps most threads busy on few cores
             hash_helpers = h > 3 ? 3 : h;
+            if (GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) hash_helpers = 0;   // faster on a Z1
         }
         rt_log("memory: dirty hashing on the caller plus %d thread-pool helpers per large query", hash_helpers);
     }
@@ -481,7 +495,7 @@ static uint64_t written_hashed(uint64_t addr, uint64_t size, uint64_t *pages, ui
     // Untracked pages go to GetWriteWatch in runs; the run is flushed before a tracked page so pages[] stays sorted.
 #define FLUSH_WW(end)                                                                                                   \
     do {                                                                                                                \
-        if (ww_lo && !fail && n < max) {                                                                                \
+        if (ww_lo && !fail && n < max && !no_watch) {                                                                   \
             uint64_t got = written_pages(ww_lo, (end) - ww_lo, pages + n, max - n, flags);                              \
             if (got == UINT64_MAX) fail = 1;                                                                            \
             else n += got;                                                                                              \
