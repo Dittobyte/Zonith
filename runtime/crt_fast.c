@@ -25,3 +25,34 @@ __attribute__((no_builtin("memcmp"))) int memcmp(const void *pa, const void *pb,
         if (a[i] != b[i]) return (int)a[i] - (int)b[i];
     return 0;
 }
+
+// memcpy likewise: Wine's goes through its memmove (an SSE2 loop with overlap checks), 14-16% of the render thread on
+// the Z1, mostly the replay's state copies and the mirror and uniform snapshot copies. AVX2 up to 2 KiB, rep movsb
+// (fast on Zen 3 and later) above. Like the C standard, and unlike ucrtbase's, it does not handle overlap.
+__attribute__((no_builtin("memcpy"))) void *memcpy(void *restrict dst, const void *restrict src, size_t n) {
+    unsigned char *d = dst;
+    const unsigned char *s = src;
+    if (n >= 2048) {
+        __asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
+        return dst;
+    }
+    if (n >= 32) {   // 32-byte steps, then the last 32 bytes (overlapping the last step)
+        for (size_t i = 0; i + 32 < n; i += 32) _mm256_storeu_si256((__m256i *)(d + i), _mm256_loadu_si256((const __m256i *)(s + i)));
+        _mm256_storeu_si256((__m256i *)(d + n - 32), _mm256_loadu_si256((const __m256i *)(s + n - 32)));
+    } else if (n >= 16) {
+        __m128i a = _mm_loadu_si128((const __m128i *)s), b = _mm_loadu_si128((const __m128i *)(s + n - 16));
+        _mm_storeu_si128((__m128i *)d, a), _mm_storeu_si128((__m128i *)(d + n - 16), b);
+    } else if (n >= 8) {
+        uint64_t a, b;
+        __builtin_memcpy(&a, s, 8), __builtin_memcpy(&b, s + n - 8, 8);
+        __builtin_memcpy(d, &a, 8), __builtin_memcpy(d + n - 8, &b, 8);
+    } else if (n >= 4) {
+        uint32_t a, b;
+        __builtin_memcpy(&a, s, 4), __builtin_memcpy(&b, s + n - 4, 4);
+        __builtin_memcpy(d, &a, 4), __builtin_memcpy(d + n - 4, &b, 4);
+    } else if (n) {
+        unsigned char a = s[0], b = s[n / 2], c = s[n - 1];
+        d[0] = a, d[n / 2] = b, d[n - 1] = c;
+    }
+    return dst;
+}

@@ -397,6 +397,19 @@ static void check_memcmp(void) {
                 bad = (got > 0) != (want > 0) || (got < 0) != (want < 0);
             }
     CHECK(!bad, "memcmp (crt_fast.c) disagrees with a byte loop");
+    // memcpy: every length to 5000 at a few offsets, with the bytes around the destination untouched.
+    static unsigned char src[5200], dst[5200];
+    for (int i = 0; i < 5200; i++) src[i] = (unsigned char)(i * 131 + 7);
+    for (int n = 0; n <= 5000 && !bad; n += n < 300 ? 1 : 97)
+        for (int off = 0; off < 40 && !bad; off += 13) {
+            for (int i = 0; i < 5200; i++) dst[i] = 0xEE;
+            memcpy(dst + off + 64, src + off, (size_t)n);
+            for (int i = 0; i < 5200 && !bad; i++) {
+                volatile int in = i >= off + 64 && i < off + 64 + n;
+                bad = dst[i] != (in ? src[i - 64] : 0xEE);
+            }
+        }
+    CHECK(!bad, "memcpy (crt_fast.c) copies wrong bytes");
 }
 
 static void check_memory(void) {
