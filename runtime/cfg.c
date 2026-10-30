@@ -30,7 +30,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AA_ENGINE", "AB", "AMIIBO_DIR", "ANISO", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AA_ENGINE", "AB", "AMD_PRESET", "AMIIBO_DIR", "ANISO", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "ASYNC_PREEMPT", "AUDIO", "AUDIO_OFF", "AUDIO_PREFILL_MS",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -97,7 +97,8 @@ static const struct { const char *key, *section; } sections[] = {
     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"ASTC_BC", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
-    {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"},
+    {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"}, {"VK_RECORDER", "performance"},
+    {"AMD_PRESET", "performance"},
     {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
     {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_EXACT", "diagnostics"}, {"WB_SNAPSHOT", "diagnostics"},
     {"WB_INVALIDATE", "diagnostics"},
@@ -113,7 +114,7 @@ static const CfgMeta metas[] = {
     {"FULLSCREEN", "0", "0|1", LIVE}, {"WINDOW_SIZE", "1920x1080", NULL, LIVE},
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
-    {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
+    {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|59|67|75|77|100|125|150|200", RESTART},
     {"UPSCALER", "fsr", "fsr|bilinear", LIVE}, {"SHARPNESS", "80", "0..100", LIVE},
     {"DLAA", "0", "0|1", RESTART}, {"AA_ENGINE", "auto", "auto|dlss|fsr3", LIVE},
     {"DLSS", "dlaa", "dlaa|quality|balanced|performance", RESTART}, {"FXAA", "1", "0|1", LIVE},
@@ -172,6 +173,8 @@ static const CfgMeta metas[] = {
     // Vulkan
     {"VK_VALIDATION", "0", "0|1", RESTART}, {"VK_DYN_VERTEX", "", "0|1", RESTART},
     {"VK_DYN_A2C", "", "0|1", RESTART}, {"VK_SUBGROUP_PIN", "1", "0|1", RESTART},
+    // VK_RECORDER unset: on, except on AMD GPUs outside Wine (vk_rec.c); the menu shows the unset state as default
+    {"VK_RECORDER", "", "0|1", RESTART}, {"AMD_PRESET", "0", "0|1", RESTART},
     // diagnostics
     {"TRACE", "", NULL, RESTART}, {"FLIGHT", "0", "0|1", RESTART}, {"FLIGHT_SPIKE_MS", "100", "0..60000", RESTART},
     {"WB_FENCE_LIMIT", "65536", "0..1073741824", RESTART}, {"WB_EXACT", "1", "0|1", RESTART},
@@ -323,9 +326,29 @@ static const char *raw_get(const char *name) {
     return NULL;
 }
 
+// TOTK_AMD_PRESET=1 (zenvyzenshiro): the AMD compatibility preset. Keys the environment and totk.ini leave unset take
+// these values, the start configuration chosen after VK_ERROR_DEVICE_LOST reports on RDNA 2 (RX 6700 XT, Adrenalin
+// 26.x); which of the two paths causes the loss is not established. The replay makes its Vulkan calls on the
+// submitting thread (vk_rec.c rec_begin) and ASTC textures are decoded on the CPU (vk_astc.c vk_astc_mode). A key set
+// anywhere, the menu included, wins over the preset, and the preset over a device profile.
+static const struct { const char *key, *value; } amd_preset[] = {
+    {"TOTK_VK_RECORDER", "0"},
+    {"TOTK_ASTC", "cpu"},
+};
+
+static const char *preset_get(const char *name) {
+    const char *p = raw_get(PREFIX "AMD_PRESET");
+    if (!p || !*p || !strcmp(p, "0")) return NULL;
+    for (size_t i = 0; i < sizeof amd_preset / sizeof *amd_preset; i++)
+        if (!strcasecmp(amd_preset[i].key, name)) return amd_preset[i].value;
+    return NULL;
+}
+
 const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
+    if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
+    if ((v = preset_get(name))) return v;
+    if (!profile_of()) return NULL;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
@@ -696,6 +719,10 @@ static void load_ini(void) {
         snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
         if (getenv(var)) rt_log("cfg: %s is set in the environment and overrides totk.ini", var);
     }
+    const char *p = raw_get("TOTK_AMD_PRESET");
+    if (p && *p && strcmp(p, "0"))
+        for (size_t i = 0; i < sizeof amd_preset / sizeof *amd_preset; i++)
+            if (!raw_get(amd_preset[i].key)) rt_log("cfg: AMD preset: %s=%s", amd_preset[i].key, amd_preset[i].value);
 }
 
 void cfg_init(void) {

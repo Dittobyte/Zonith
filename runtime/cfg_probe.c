@@ -480,6 +480,13 @@ int probe_cfg(void) {
         for (int j = i + 1; cfg_meta_at(j); j++)
             if (!strcmp(cfg_meta_at(i)->key, cfg_meta_at(j)->key))
                 fprintf(stderr, "FAIL cfg: %s has two rows in the defaults table\n", cfg_meta_at(i)->key), fails++;
+    plat_setenv("TOTK_AMD_PRESET", "1");
+    CHECK(EQ(cfg_value("TOTK_ASTC"), "cpu") && rt_knob("VK_RECORDER", "1") == 0, "amd_preset fills unset keys");
+    plat_setenv("TOTK_ASTC", "gpu");
+    CHECK(EQ(cfg_value("TOTK_ASTC"), "gpu"), "a set key beats amd_preset");
+    plat_setenv("TOTK_ASTC", NULL);
+    plat_setenv("TOTK_AMD_PRESET", NULL);
+    CHECK(EQ(cfg_value("TOTK_ASTC"), "auto"), "amd_preset off: the table default");
     printf("probe-cfg: %s\n", fails ? "FAIL" : "ok");
     return fails ? 1 : 0;
 }
