@@ -7,7 +7,7 @@ priority even where it costs Windows performance.
 The test machine (RDNA 3 iGPU, RADV, Mesa 26.2.0-devel, SteamOS kernel 6.18, Proton 11.0-100). This
 file records what we measured, what the causes were, what changed in the runtime, and what is still open.
 
-## Status (2026-10-29, branch `wine-dirty-tracking`)
+## Status (2026-10-30, branch `wine-dirty-tracking`)
 
 | Build | Title | In world | Notes |
 |---|---|---|---|
@@ -16,9 +16,10 @@ file records what we measured, what the causes were, what changed in the runtime
 | hash tracker (49a8b76) | 8-19 fps | ~10 fps | reached the world |
 | census skip (e91c92c) | 17-20 fps | - | |
 | no write watch, THP (8e5429a) | 37-41 fps | 20-27 fps | intro and loading at a locked 60 |
+| **copy mode (2bd136b)** | **60 fps** | **60 fps** | pacing-bound; world tested standing in the opening cave |
 
 Run with `TOTK_TRACE=perf` and nothing else: every Wine default below is chosen automatically (`wine_get_version` in
-ntdll). `TOTK_IMPORT_CHUNK` stays 0 until the chunk fix below is done.
+ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the 8e5429a behaviour for A/B runs.
 
 ## Findings, in the order we found them
 
@@ -50,6 +51,14 @@ ntdll). `TOTK_IMPORT_CHUNK` stays 0 until the chunk fix below is done.
    `VK_ERROR_DEVICE_LOST`, with no GPU fault in dmesg: the CS ioctl was rejected. The windows cover guest pages that are
    PROT_NONE (guard pages from SetMemoryPermission, `protect()`, uncommitted holes). amdgpu accepts the userptr at
    creation, but `hmm_range_fault` returns -EFAULT on those pages at submit time. Windows never checks.
+7. **Proton hides `VK_EXT_map_memory_placed`, so copy mode it is.** RADV has the extension, but winevulkan's list
+   of app-visible extensions (Proton 10, 11, Experimental, GE) leaves it out, so the SavageWind-style placed heap
+   is out without a patched winevulkan. Copy mode (`TOTK_MEMORY=copy`, vk_memory.c "VRAM mirror") imports nothing:
+   pools the GPU uses get a mirror, written pages go in through staging copies, GPU writes come back through
+   staging at fence completion. In the world on the Deck: 132 pools / 372 MiB mirrored, ~0.4 MiB uploaded and
+   ~0.2 MiB written back a frame, tracking 0.6 ms, write-watch queries 0.8 ms, replay 3-4 ms, 60 fps.
+   `amdgpu_cs_ioctl` fell from ~60% to 2.8% of the submit thread; its top kernel cost is now `do_pagemap_scan`
+   (the write watch, 14%). Same scene with `TOTK_MEMORY=import`: 27-31 fps.
 
 ## What changed in the runtime
 
@@ -62,25 +71,17 @@ ntdll). `TOTK_IMPORT_CHUNK` stays 0 until the chunk fix below is done.
 | 45a3b07 | helper count setting | `TOTK_DIRTY_HELPERS=auto\|0..8` (auto = 0 under Wine) |
 | 8e5429a | under Wine the heap and alias reservations have no write watch: THP back the heap, the hash tracker covers every import, other pages read as unwritten | `TOTK_WRITE_WATCH=auto\|on\|off` (environment only) |
 | 93e9b82 + follow-up | import chunks, off by default after finding 6 | `TOTK_IMPORT_CHUNK=0\|2..4096` |
+| 2bd136b | copy mode, auto under Wine; the reservations keep their write watch in it | `TOTK_MEMORY=copy` |
 
 Windows behaviour is unchanged by default: writewatch, preemption on, write watch on, no chunks.
 
 ## Next steps
 
-1. **Heap as GPU memory (the real fix).** SavageWindRecomp hit finding 4 on the Steam Deck: "amdgpu revisits every
-   page of an imported host-memory buffer at each submission: ~4 ms a submit for the 3 GB guest heap". Their fix is to
-   make the guest heap GPU memory, exported as a dma-buf and `mmap`ed over the heap's addresses
-   (`runtime/nvn/vulkan/exec.c`, `backend_heap_set`). A Windows exe under Wine can't mmap a dma-buf. The equivalent
-   would be `VK_EXT_map_memory_placed`: allocate the heap as host-visible (cached) device memory and map it AT the heap
-   address, so pools become buffers bound at offsets with no userptr at all. That removes the per-submit validation,
-   and probably the hashing too, if the write watch works on that mapping. To check: does Proton's winevulkan expose
-   `VK_EXT_map_memory_placed` to the app, and how does it interact with `commit`/`decommit`/`protect` in memory.c?
-2. **Safe chunks (fallback).** Form a chunk only over a window that's wholly committed read-write (VirtualQuery). Make
-   `protect()`/`decommit()` drop or split a live chunk before a guest page in it becomes PROT_NONE: the guest can change
-   permissions later.
-3. **Copy mode (fallback).** No imports under Wine at all: ordinary host-visible buffers, an exact write watch for CPU
-   uploads, and GPU-written ranges copied back to guest memory at fence completion.
-4. Remaining hash cost: ~11 ms a frame in the world (230 MiB). It goes away with 1 or 3.
+1. Test copy mode moving outdoors, in combat, through fast travel and menus (only the opening cave so far).
+2. If the write-back MiB grows, absorb copy-mode write-backs so their pages don't sync back into the mirror
+   (`ponytail:` note in vk_memory.c `stage_done`).
+3. Superseded unless copy mode falls short: the placed heap (needs a patched winevulkan shipped with the game,
+   Josh's call) and safe import chunks (finding 6).
 
 ## Reference projects (kept in `C:\Users\jshqn\Projects\ref`)
 
