@@ -826,6 +826,9 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 
 void vk_mem_dirty_submit(void) {
     if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on) return;   // the mirror's own line replaces the census
+    // Hash mode: the census would hash every buffer-bound pool at every submit, more than the game's own checks
+    // (title scene on Windows: 200 of 350 MiB a frame), so the diagnostic would distort the cost it is meant to show.
+    if (mem_dirty_hash()) return;
     uint64_t t0 = kern_now_ns();
     uint32_t prev = dirty_sub;   // the submit whose replay noted the bindings
     dirty_sub = prev + 1 ? prev + 1 : 1;
