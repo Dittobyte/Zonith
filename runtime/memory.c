@@ -308,7 +308,9 @@ void mem_init(void) {
         .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes(),   // resolution.c
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
-    // Dirty tracking (see mem_dirty_track): hashes under Wine unless TOTK_DIRTY says otherwise.
+    // Dirty tracking (see mem_dirty_track): hashes under Wine when pools are imported, unless TOTK_DIRTY says
+    // otherwise. Wine's default, copy mode, imports nothing: the exact write watch serves it, and vk_memory.c can then
+    // freeze idle regions so its queries skip them (the scans were ~2 ms a frame outdoors on a Z1).
     const char *d = cfg_value("TOTK_DIRTY");
     if (strcmp(d, "auto") && strcmp(d, "hash") && strcmp(d, "writewatch")) {
         rt_log("memory: TOTK_DIRTY=%s is not auto, hash or writewatch: auto", d);
@@ -317,7 +319,9 @@ void mem_init(void) {
     char why[64];
     if (strcmp(d, "auto")) snprintf(why, sizeof why, "TOTK_DIRTY=%s", d);
     else snprintf(why, sizeof why, "auto, %s%s", wine_version ? "Wine " : "Windows", wine_version ? wine_version() : "");
-    dirty_hash = !strcmp(d, "hash") || (!strcmp(d, "auto") && wine_version) || no_watch;
+    const char *m = cfg_value("TOTK_MEMORY");
+    int imp = !strcmp(m, "import") || !strcmp(m, "mirror") || !strcmp(m, "verify");
+    dirty_hash = !strcmp(d, "hash") || (!strcmp(d, "auto") && wine_version && imp) || no_watch;
     rt_log("memory: dirty tracking %s (%s)", !dirty_hash ? "write watch" : no_watch ?
            "hash: imported pages by XXH3, no write watch on the other pages (TOTK_WRITE_WATCH)" :
            "hash: imported pages by XXH3, other pages by write watch", why);
