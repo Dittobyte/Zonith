@@ -106,16 +106,15 @@ static struct {
     NVNbufferRange vin[16];              // the ranges they were resolved from, under vk_mem_gen vgen
     uint64_t vgen;
     int vb_valid;
-    uint8_t support[SUPPORT_BYTES];      // last support buffer and where it lives
-    float sup_in[3];                     // the support_fill arguments it was filled from
+    float sup_in[3];                     // the support_fill arguments of the last support buffer, and where it lives
     VkBuffer sup_buf;
     VkDeviceSize sup_off;
     int sup_valid;
-    uint8_t c0[3][VK_C0_BYTES];          // last c0 bank per stage (vertex, fragment, compute) and where it lives
+    // the last c0 bank per stage (vertex, fragment, compute): where it lives and what vk_c0_fill read for it
     VkBuffer c0_buf[3];
     VkDeviceSize c0_off[3];
     int c0_valid[3];
-    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; } c0_in[3];   // what vk_c0_fill read for c0[k]
+    struct { p_bind_buf ssbo[16], ubo[16]; uint32_t dim[3], binst; } c0_in[3];
     VkPipelineLayout ds_layout;          // graphics layout the sets below were last pushed or bound with
     VkDescriptorSet ds_bound[2];         // allocated set bound per set number (0: none or pushed since)
     VkDescriptorSet ds_last[2];          // last allocated and written set per set number, contents in DS
@@ -841,26 +840,25 @@ static int c0_on(void) {   // TOTK_FIX_C0=0: c0 reads zeros instead of the drive
     return on;
 }
 
-// c0 from replay scratch; a bank equal to the stage's previous one reuses its range, so it costs no copy.
+// c0 from replay scratch; a stage whose inputs are those of its previous bank reuses that range, so it costs no copy.
 static VkDescriptorBufferInfo c0_info(VkExec *ex, int st) {
     int k = st == NVN_STAGE_VS ? 0 : st == NVN_STAGE_FS ? 1 : 2;
     // vk_c0_fill reads the storage slots, and the uniform slots and dispatch size for compute or the base instance for
-    // graphics: equal inputs give the same bank, so neither the fill nor the 2 KiB compare is needed.
-    typeof(B.c0_in[0]) in;
-    memset(&in, 0, sizeof in);
-    memcpy(in.ssbo, ex->ssbo[st], sizeof in.ssbo);
-    if (st == NVN_STAGE_CS) memcpy(in.ubo, ex->ubo[st], sizeof in.ubo), memcpy(in.dim, c0_dim, sizeof in.dim);
-    else in.binst = c0_binst;
-    if (B.c0_valid[k] && !memcmp(&in, &B.c0_in[k], sizeof in))
+    // graphics: equal inputs give the same bank. Compared in place, without building a copy of them first. Other inputs
+    // give another bank (a slot's stage and index aside, which do not change for it), so the bank itself is not compared.
+    typeof(B.c0_in[0]) *in = &B.c0_in[k];
+    int cs = st == NVN_STAGE_CS;
+    if (B.c0_valid[k] && !memcmp(in->ssbo, ex->ssbo[st], sizeof in->ssbo) &&
+        (cs ? !memcmp(in->ubo, ex->ubo[st], sizeof in->ubo) && !memcmp(in->dim, c0_dim, sizeof in->dim)
+            : in->binst == c0_binst))
         return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
-    B.c0_in[k] = in;
+    memcpy(in->ssbo, ex->ssbo[st], sizeof in->ssbo);
+    if (cs) memcpy(in->ubo, ex->ubo[st], sizeof in->ubo), memcpy(in->dim, c0_dim, sizeof in->dim);
+    else in->binst = c0_binst;
     uint8_t tmp[VK_C0_BYTES];
     vk_c0_fill(tmp, st, ex->ssbo[st], ex->ubo[st], c0_dim, c0_binst);
-    if (!B.c0_valid[k] || memcmp(tmp, B.c0[k], VK_C0_BYTES)) {
-        memcpy(scratch(ex, VK_C0_BYTES, &B.c0_buf[k], &B.c0_off[k]), tmp, VK_C0_BYTES);
-        memcpy(B.c0[k], tmp, VK_C0_BYTES);
-        B.c0_valid[k] = 1;
-    }
+    memcpy(scratch(ex, VK_C0_BYTES, &B.c0_buf[k], &B.c0_off[k]), tmp, VK_C0_BYTES);
+    B.c0_valid[k] = 1;
     return (VkDescriptorBufferInfo){B.c0_buf[k], B.c0_off[k], VK_C0_BYTES};
 }
 
@@ -1746,13 +1744,8 @@ static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
                 uint8_t tmp[SUPPORT_BYTES];
                 support_fill(tmp, in[0], in[1], in[2]);
                 memcpy(B.sup_in, in, sizeof in);
-                if (!B.sup_valid || memcmp(tmp, B.support, SUPPORT_BYTES)) {   // a new buffer only when the contents changed
-                    VkBuffer sb;
-                    VkDeviceSize so;
-                    memcpy(scratch(ex, SUPPORT_BYTES, &sb, &so), tmp, SUPPORT_BYTES);
-                    memcpy(B.support, tmp, SUPPORT_BYTES);
-                    B.sup_buf = sb, B.sup_off = so, B.sup_valid = 1;
-                }
+                memcpy(scratch(ex, SUPPORT_BYTES, &B.sup_buf, &B.sup_off), tmp, SUPPORT_BYTES);   // other inputs, other contents
+                B.sup_valid = 1;
             }
             o->buffer = (VkDescriptorBufferInfo){B.sup_buf, B.sup_off, SUPPORT_BYTES};
         } else if (b->kind == GFX_RES_UBO) {
@@ -2345,7 +2338,7 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
         vkCmdCopyBuffer(ex->cb, ip.buffer, B.c0_buf[2], 1, &cp);
         ex->recorded++;
         vk_exec_barrier(ex);
-        B.c0_valid[2] = 0;   // the range no longer holds B.c0[2]
+        B.c0_valid[2] = 0;   // the range no longer holds the bank c0_in[2] gives
     }
     vkCmdDispatchIndirect(ex->cb, ip.buffer, ip.offset);
     ex->recorded++;
