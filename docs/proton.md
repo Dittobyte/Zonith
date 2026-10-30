@@ -17,7 +17,11 @@ file records what we measured, what the causes were, what changed in the runtime
 | census skip (e91c92c) | 17-20 fps | - | |
 | no write watch, THP (8e5429a) | 37-41 fps | 20-27 fps | intro and loading at a locked 60 |
 | copy mode (2bd136b) | 60 fps | 60 fps cave, 45-47 fps outdoors | outdoors CPU-bound: render thread 100% busy |
-| **write watch + freezing in copy mode (3a4f4fa)** | **60 fps** | **55 fps standing, 49 walking outdoors** | Great Sky Island |
+| write watch + freezing in copy mode (3a4f4fa) | 60 fps | 55 standing, 49 walking outdoors | Great Sky Island |
+| own memcmp, memcpy (1e426f5, 9103142) | 60 fps | 54-57 standing, 49-51 walking | memcmp +1.5 fps; memcpy neutral |
+| recording copies reused (29fb133) | 60 fps | 59 standing, 53.5 walking | game threads stop re-zeroing pages |
+| descriptor sets on the recorder (76cc802) | 60 fps | 59.9 standing, 54.4 walking | standing at the vsync cap |
+| **recording buffers reused, generated code at -O2 (befd1c6, `TOTK_GEN_OPT=-O2`)** | **60 fps** | **59.9 standing, 54.0-54.5 walking** | the best build; render thread asleep ~42% waiting on game threads |
 
 Run with `TOTK_TRACE=perf` and nothing else: every Wine default below is chosen automatically (`wine_get_version` in
 ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the 8e5429a behaviour for A/B runs.
@@ -67,6 +71,18 @@ ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the
    1 GiB frozen; 55 fps standing, 49 walking. The recorder thread is worth +1.7 ms a frame even with its spin
    (`TOTK_VK_RECORDER=ab`). Wine's ucrtbase memcmp is a scalar loop at 5.7% of the render thread; the exe now
    defines its own (`runtime/crt_fast.c`).
+9. **Then the frame was gated by allocations and Vulkan calls, and finally by the game's own threads.** Runtime
+   code is the whole render thread: 0% of its samples are generated game code. Wine's memcpy came to 14-16% of it;
+   the exe's own memcpy took that to ~10% with no fps change, since the copies themselves are the cost. The game
+   threads lost 6-7% to page faults: every finished command recording was copied into a fresh malloc block of
+   often over 1 MiB, and under Wine such a block is its own mapping, faulted in and zeroed every frame. Reusing the
+   blocks (29fb133) gave +3-5 fps; reusing the recording buffers too (befd1c6) cut the game threads' faults from
+   ~110k/s to ~63k/s. A draw allocated and wrote a descriptor set at 0.7 draws in 1, two unix calls each under Wine;
+   the write now goes through the recorder ring and sets come eight at a time (76cc802). After that the render
+   thread is on-CPU only ~57% of the time and sleeps ~7 ms a frame in guest synchronisation (`thread_main`), waiting
+   for the game threads, which run ~60% generated code: building it at -O2 (`TOTK_GEN_OPT=-O2`) cut their faults to
+   ~49k/s and gave the most headroom (render busy 10.5-11.3 ms standing). At -O2 a 2 x 45 s walk ended at the same
+   place with the same camera; combat, gliding and physics puzzles are not yet checked.
 
 ## What changed in the runtime
 
@@ -82,17 +98,27 @@ ntdll); under Wine that is copy mode (finding 7). `TOTK_MEMORY=import` gives the
 | 2bd136b | copy mode, auto under Wine; the reservations keep their write watch in it | `TOTK_MEMORY=copy` |
 | 3a4f4fa | copy mode uses the write watch, not hashes, so idle regions freeze | `TOTK_DIRTY` |
 | 1e426f5 | memcmp defined in the exe (AVX2) instead of Wine's scalar one | |
+| 9103142 | memcpy defined in the exe (AVX2, rep movsb from 2 KiB); does not handle overlap | |
+| c9637da | c0 and support buffers: no redundant compares and copies | |
+| faa1463 | worst-frame lines end with "rest", the time outside the named parts | |
+| 29fb133 | recording copies come from a pool of reused blocks (nvn_api_cmd.c `blk_alloc`) | |
+| 76cc802 | descriptor-set template updates on the recorder thread, sets allocated eight at a time | |
+| befd1c6 | recording buffers from the same pool; the generated code's level is a build setting | `TOTK_GEN_OPT` (build_game.py, environment) |
 
 Windows behaviour is unchanged by default: writewatch, preemption on, write watch on, no chunks.
 
 ## Next steps
 
-1. Outdoors the render thread is still over 16.7 ms (18 standing, ~20 walking): the replay (~9 ms) is the largest
-   part. Combat, fast travel and busy areas are untested.
-2. If the write-back MiB grows, absorb copy-mode write-backs so their pages don't sync back into the mirror
-   (`ponytail:` note in vk_memory.c `stage_done`).
-3. Superseded unless copy mode falls short: the placed heap (needs a patched winevulkan shipped with the game,
-   Josh's call) and safe import chunks (finding 6).
+1. Build with `TOTK_GEN_OPT=-O2` (the best build). Before making it the default, check combat, gliding, cooking and
+   physics puzzles at -O2.
+2. Walking outdoors is ~54 fps: render busy ~17 ms with the render thread asleep ~42% in guest synchronisation. Find
+   what `thread_main` waits for and which game thread signals it late (the hand-off, not render CPU, gates the frame).
+3. The game threads still take ~49k page faults/s, mostly copies into memory Wine maps fresh; find the next
+   allocation that comes and goes every frame.
+4. Untested: combat, fast travel, busy areas (stables, Lookout Landing), the surface and the Depths.
+5. Occasional 150-300 ms pipeline-build hitches: `VK_EXT_shader_object` is exposed by Proton 11 + RADV.
+6. If the write-back MiB grows, absorb copy-mode write-backs (`ponytail:` note in vk_memory.c `stage_done`).
+7. Superseded unless copy mode falls short: the placed heap (needs a patched winevulkan) and safe import chunks.
 
 ## Reference projects (kept in `C:\Users\jshqn\Projects\ref`)
 
