@@ -62,6 +62,7 @@ typedef struct PoolRec {
     uint32_t synced_gen;               // page generation its lazy-mirror count covers; DIRTY_UNSYNCED until scanned
     uint8_t bufbound;                  // ever bound as a vertex, index, uniform, storage or indirect buffer
     uint8_t untracked;                 // the last dirty scan found no write watch over it
+    uint8_t dtracked;                  // POOL_IMPORT: its import range is in mem_dirty_track (TOTK_DIRTY hash mode)
     // VRAM mirror (POOL_IMPORT, "VRAM mirror" below). mstate and mbuf change on the replay thread only.
     uint8_t mstate;                    // MS_NONE until the first buffer use, then MS_ON or MS_REFUSED
     VkBuffer mbuf;                     // MS_ON: device-local copy of [import_lo, import_hi), same offsets as buf
@@ -265,6 +266,10 @@ int vk_pool_init(pool_t *p) {
         r->kind = POOL_IMPORT;
         mem_thaw((uintptr_t)p->mem, p->size);   // the import may need write access to the pages
         ok = import_pool(c, r, (uintptr_t)p->mem, p->size);
+        if (ok && mem_dirty_hash()) {   // the GPU's access to the import breaks Wine's write watch over it (memory.c)
+            mem_dirty_track(r->import_lo, r->import_hi - r->import_lo, 1);
+            r->dtracked = 1;
+        }
         if (!ok) {
             // Not fatal for the game: the pool works for the CPU, and vk_mem_resolve reports its addresses as unbacked.
             long n = InterlockedIncrement(&n_import_failures);
@@ -311,6 +316,7 @@ void vk_pool_fini(pool_t *p) {
     ReleaseSRWLockExclusive(&pool_lock);
     if (!r) return;
     if (r->kind == POOL_IMPORT) mem_thaw(r->lo, r->size);   // the storage goes back to the guest writable
+    if (r->dtracked) mem_dirty_track(r->import_lo, r->import_hi - r->import_lo, 0);
     // Images cut from this range go first; a used buffer or memory waits until the GPU is done with it, since the
     // guest gets the storage back when this returns.
     vk_texture_range_gone(r->lo, r->size, r->alloc);
@@ -643,6 +649,9 @@ static void stamp_range(uint64_t lo, uint64_t hi, uint32_t g) {
 void vk_guest_written(uint64_t addr, uint64_t size) {
     if (!size || nvn_gpu_only(addr)) return;
     uint64_t lo = addr & ~0xfffull, hi = (addr + size + 0xfff) & ~0xfffull;
+    // Hash mode: these bytes are no write to report again. Before the stamp: a write after the hash is the next
+    // query's, one before it is covered by the stamp.
+    mem_dirty_absorb(lo, hi - lo);
     AcquireSRWLockExclusive(&gen_lock);
     stamp_range(lo, hi, ++gen_now);
     ReleaseSRWLockExclusive(&gen_lock);
@@ -1005,7 +1014,9 @@ static void mirror_mode(int discrete) {
     // Submissions a region stays unwritten before it is frozen. 60 rather than 300: in a fight 100 of the 257 MiB
     // queried a frame lay in regions idle for 30-299 submissions, and a thaw by a write costs about 60 us.
     const char *fi = cfg_get("TOTK_FREEZE_IDLE");
-    freeze_idle = fi && *fi ? atoi(fi) : 60;
+    // Hash mode: off unless set. A freeze write-protects pages Wine's GPU imports share, and the next GPU access then
+    // revalidates the whole import; hashed pages gain nothing from it either.
+    freeze_idle = fi && *fi ? atoi(fi) : mem_dirty_hash() ? 0 : 60;
     if (freeze_idle < 0) freeze_idle = 0;
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
@@ -1449,8 +1460,14 @@ static void mirror_log(uint64_t frame) {
     ReleaseSRWLockExclusive(&gen_lock);
     double wf = frame > ww_last ? (double)(frame - ww_last) : 1.0;
     ww_last = frame;
-    uint64_t fz, ff, ft, fo;
+    uint64_t fz, ff, ft, fo, dt_bytes, dh_bytes;
+    double dh_ms;
     mem_freeze_stats(&fz, &ff, &ft, &fo);
+    mem_dirty_stats(&dt_bytes, &dh_bytes, &dh_ms);
+    if ((rt_trace & RT_TRACE_PERF) && mem_dirty_hash())
+        rt_log("mem: dirty hash frame %llu: %.1f MiB of imported pages tracked; per frame %.1f MiB hashed, %.3f ms in hash-mode "
+               "queries and absorbs (write-watch runs between imports included)",
+               (unsigned long long)frame, dt_bytes / 1048576.0, dh_bytes / wf / 1048576.0, dh_ms / wf);
     if (rt_trace & RT_TRACE_PERF)
         rt_log("mem: write-watch frame %llu: per frame, every consumer: %.1f queries over %.1f MiB, %.3f ms (%.1f found "
                "%.0f written pages, %.3f ms); frozen %.0f MiB; since the last line: freezes %llu, thaws by a write %llu, by a file read "

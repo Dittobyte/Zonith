@@ -146,7 +146,20 @@ uint64_t mem_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64
 uint64_t mem_written_peek(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max);
                                                            // the same without the reset: the bits stay for the next
                                                            // mem_written_pages (verify checks only)
-int mem_freeze(uint64_t a);                                // makes the 2 MiB region at a (2 MiB aligned, watched,
+int mem_dirty_hash(void);                                  // 1: TOTK_DIRTY hash mode (auto under Wine): the pages of
+                                                           // mem_dirty_track ranges are tracked by hashes, not by
+                                                           // GetWriteWatch, which Wine breaks for imported memory
+void mem_dirty_track(uint64_t addr, uint64_t size, int on);
+                                                           // hash mode: [addr, addr+size) is imported into Vulkan
+                                                           // (on 1) or no longer (on 0), counted per page; a page that
+                                                           // joins is reported written once. No-op otherwise
+void mem_dirty_absorb(uint64_t addr, uint64_t size);       // hash mode: the current bytes of the tracked pages in the
+                                                           // range are not news (the runtime wrote them and reports
+                                                           // them itself); no-op otherwise
+void mem_dirty_stats(uint64_t *tracked, uint64_t *hashed, double *hash_ms);
+                                                           // bytes tracked now; bytes hashed and the time it took
+                                                           // since the last call
+int mem_freeze(uint64_t a);                               // makes the 2 MiB region at a (2 MiB aligned, watched,
                                                            // committed PAGE_READWRITE) read-only until a write or
                                                            // mem_thaw thaws it; 1 frozen (or already), 0 refused
 int mem_frozen(uint64_t a);                                // the 2 MiB region of a is frozen: no page in it changed

@@ -55,6 +55,10 @@
 # imported into Vulkan), mirror (pools used as buffers get a copy in video memory) or verify (mirror plus a check of
 # every copy; slow).
 # memory = auto
+# How the CPU's writes to game memory are found: writewatch (GetWriteWatch), hash (pages imported into Vulkan are
+# hashed and compared, the rest uses GetWriteWatch) or auto (hash under Wine/Proton, whose write watch reports every
+# imported page as written once the GPU touches it; writewatch on Windows).
+# dirty = auto
 # A new texture created over a live texture's memory starts with that content instead of empty.
 # tex_alias = 1
 # Host zstd decoder in place of the game's (0 = the game's), and a check that decodes every call both ways and logs

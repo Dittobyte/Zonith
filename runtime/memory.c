@@ -80,6 +80,7 @@ static void *reserve_at(uint64_t at, uint64_t size, DWORD extra) {
 static volatile uint8_t frz[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
 static uint32_t thaw_ms[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: GetTickCount of the last thaw request, 0 never
 static volatile LONG nfrz;
+static int dirty_hash;   // TOTK_DIRTY: imported pages are tracked by hashes (mem_dirty_track), set by mem_init
 static SRWLOCK frz_lock = SRWLOCK_INIT;
 static volatile LONG64 frz_count[4];   // freezes; thaws by a write fault, by mem_thaw, by a mapping change
 
@@ -289,6 +290,20 @@ void mem_init(void) {
         .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes(),   // resolution.c
     };
     if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
+    // Dirty tracking (see mem_dirty_track): hashes under Wine unless TOTK_DIRTY says otherwise.
+    const char *(*wine_version)(void) =
+        (const char *(*)(void))(void *)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version");
+    const char *d = cfg_value("TOTK_DIRTY");
+    if (strcmp(d, "auto") && strcmp(d, "hash") && strcmp(d, "writewatch")) {
+        rt_log("memory: TOTK_DIRTY=%s is not auto, hash or writewatch: auto", d);
+        d = "auto";
+    }
+    char why[64];
+    if (strcmp(d, "auto")) snprintf(why, sizeof why, "TOTK_DIRTY=%s", d);
+    else snprintf(why, sizeof why, "auto, %s%s", wine_version ? "Wine " : "Windows", wine_version ? wine_version() : "");
+    dirty_hash = !strcmp(d, "hash") || (!strcmp(d, "auto") && wine_version);
+    rt_log("memory: dirty tracking %s (%s)", dirty_hash ? "hash: imported pages by XXH3, other pages by write watch" :
+           "write watch", why);
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
@@ -305,12 +320,220 @@ static uint64_t written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uin
     return n;
 }
 
+// ---- dirty tracking of imported pages (TOTK_DIRTY)
+// Under Wine (Proton 11) GetWriteWatch is exact for memory only the CPU touches, but every page of a Vulkan host-pointer
+// import comes back written after any GPU access to it, a read included: amdgpu takes the pages of the userptr with
+// write access, which clears the userfaultfd write protection Wine's kernel write watches rely on. Every reset also
+// write-protects the pages again, and the next GPU access then revalidates the whole import (wwdiag on RADV: a 64 MiB
+// GPU read took 8.5-9 ms after a reset, 2 ms without one). Each frame then saw every pool the GPU read as rewritten.
+// "hash" mode (TOTK_DIRTY=hash, and auto under Wine, which ntdll's wine_get_version export identifies) keeps a 64-bit
+// XXH3 hash per page that an import covers (mem_dirty_track) and answers for those pages by hashing them again; every
+// other page keeps GetWriteWatch. GetWriteWatch then never resets an imported page, so the import is never
+// write-protected again. "writewatch" (the default on Windows) uses GetWriteWatch for every page.
+// - A page joins with its fresh bit set and is reported once at its next query, as Windows reports every page of a new
+//   import as written.
+// - A page that is not committed (heap above its size, unmapped alias pages, moved stack sources) is not read; it is
+//   marked fresh and reported once it is readable again.
+// - mem_dirty_absorb takes the current bytes as the hash: the runtime's own writes into imported pages (GPU write-backs,
+//   texture write-backs) are reported to the back end by vk_guest_written, as GetWriteWatch never sees GPU writes.
+// - Concurrent queries over the same page may both report it, never neither: a hash is stored only by a query that
+//   compared it with the stored one.
+// Locks: `lock` shared keeps the committed state still while a query reads guest pages; dlock orders mem_dirty_track
+// (exclusive) against queries and absorbs (shared), which update hashes and fresh bits with relaxed atomics.
+#define XXH_INLINE_ALL
+#include "third_party/xxhash/xxhash.h"
+
+#define DCHUNK_SHIFT 21
+#define DCHUNK_PAGES (1u << (DCHUNK_SHIFT - 12))
+#define DFRESH 0x8000u
+typedef struct { uint64_t h[DCHUNK_PAGES]; uint16_t n[DCHUNK_PAGES]; } DChunk;   // n: imports over the page | DFRESH
+static DChunk *dchunk[(LOW_SIZE + ALIAS_SIZE) >> DCHUNK_SHIFT];
+static SRWLOCK dlock = SRWLOCK_INIT;
+static volatile LONG64 d_tracked, d_hashed, d_ticks;   // bytes tracked now; since mem_dirty_stats: bytes hashed, and
+                                                       // performance counter ticks in hash-mode queries and absorbs
+
+// The chunk slot of watched address a, or NULL.
+static DChunk **dchunk_slot(uint64_t a) {
+    if (a - L.aslr.base < LOW_SIZE) return &dchunk[(a - L.aslr.base) >> DCHUNK_SHIFT];
+    if (a - L.alias.base < ALIAS_SIZE) return &dchunk[(LOW_SIZE + (a - L.alias.base)) >> DCHUNK_SHIFT];
+    return NULL;
+}
+
+// The moved stacks whose source (inaccessible) or destination (committed) overlaps [lo, hi); `lock` held.
+typedef struct { uint64_t lo, hi; int readable; } DSpan;
+static int stack_spans(uint64_t lo, uint64_t hi, DSpan *out, int cap) {
+    int n = 0;
+    for (unsigned i = 0; i < nstack_maps && n < cap; i++) {
+        const StackMap *m = &stack_maps[i];
+        if (lo < m->src + m->size && m->src < hi) out[n++] = (DSpan){m->src, m->src + m->size, 0};
+        if (n < cap && lo < m->dst + m->size && m->dst < hi) out[n++] = (DSpan){m->dst, m->dst + m->size, 1};
+    }
+    return n;
+}
+
+// Page a is committed and readable; `lock` held. sp: stack_spans of the query.
+static int page_readable(uint64_t a, const DSpan *sp, int nsp) {
+    for (int i = 0; i < nsp; i++)
+        if (a >= sp[i].lo && a < sp[i].hi) return sp[i].readable;
+    if (a - L.heap.base < heap_size) return 1;
+    if (a - L.alias.base < ALIAS_SIZE) return alias_pages[(a - L.alias.base) / PAGE] != 0;
+    return 0;
+}
+
+static uint64_t page_hash(uint64_t a) { return XXH3_64bits((const void *)(uintptr_t)a, PAGE); }
+
+static LONG64 qpc_now(void) {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t.QuadPart;
+}
+
+// A RESET query that filled pages[] to max resumes after the last page it reported when the same thread asks again for
+// the same range (the callers loop until a short answer); without this, each round would hash the range from the start.
+static __thread uint64_t resume_addr, resume_size, resume_at;
+
+static uint64_t written_hashed(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max, DWORD flags) {
+    if (!max || !size) return 0;
+    if (!watched(addr, size)) return UINT64_MAX;
+    int reset = (flags & WRITE_WATCH_FLAG_RESET) != 0;
+    uint64_t lo = addr & ~(PAGE - 1), hi = align_up(addr + size, PAGE), a = lo;
+    if (reset && resume_size && resume_addr == addr && resume_size == size && resume_at > lo && resume_at < hi)
+        a = resume_at;
+    resume_size = 0;
+    DSpan sp[32];
+    uint64_t n = 0, ww_lo = 0, hashed = 0;   // ww_lo: start of the pending run of untracked pages, 0 none
+    int fail = 0;
+    LONG64 t0 = qpc_now();
+    AcquireSRWLockShared(&lock);
+    AcquireSRWLockShared(&dlock);
+    int nsp = stack_spans(lo, hi, sp, 32);
+    // Untracked pages go to GetWriteWatch in runs; the run is flushed before a tracked page so pages[] stays sorted.
+#define FLUSH_WW(end)                                                                                                   \
+    do {                                                                                                                \
+        if (ww_lo && !fail && n < max) {                                                                                \
+            uint64_t got = written_pages(ww_lo, (end) - ww_lo, pages + n, max - n, flags);                              \
+            if (got == UINT64_MAX) fail = 1;                                                                            \
+            else n += got;                                                                                              \
+        }                                                                                                               \
+        ww_lo = 0;                                                                                                      \
+    } while (0)
+    while (a < hi && n < max && !fail) {
+        uint64_t ce = (a | ((1ull << DCHUNK_SHIFT) - 1)) + 1;
+        if (ce > hi) ce = hi;
+        DChunk *c = __atomic_load_n(dchunk_slot(a), __ATOMIC_ACQUIRE);
+        if (!c) {
+            if (!ww_lo) ww_lo = a;
+            a = ce;
+            continue;
+        }
+        for (; a < ce && n < max; a += PAGE) {
+            unsigned i = (unsigned)((a >> 12) & (DCHUNK_PAGES - 1));
+            uint16_t st = __atomic_load_n(&c->n[i], __ATOMIC_RELAXED);
+            if (!(st & ~DFRESH)) {
+                if (!ww_lo) ww_lo = a;
+                continue;
+            }
+            FLUSH_WW(a);
+            if (fail || n >= max) break;
+            if (!page_readable(a, sp, nsp)) {
+                if (!(st & DFRESH)) __atomic_fetch_or(&c->n[i], DFRESH, __ATOMIC_RELAXED);
+                continue;
+            }
+            uint64_t h = page_hash(a);
+            hashed++;
+            if (!(st & DFRESH) && h == __atomic_load_n(&c->h[i], __ATOMIC_RELAXED)) continue;
+            pages[n++] = a;
+            if (reset) {
+                __atomic_store_n(&c->h[i], h, __ATOMIC_RELAXED);
+                if (st & DFRESH) __atomic_fetch_and(&c->n[i], (uint16_t)~DFRESH, __ATOMIC_RELAXED);
+            }
+        }
+    }
+    if (a >= hi) FLUSH_WW(hi);
+    else if (ww_lo && n < max) FLUSH_WW(a);
+#undef FLUSH_WW
+    ReleaseSRWLockShared(&dlock);
+    ReleaseSRWLockShared(&lock);
+    InterlockedAdd64(&d_hashed, (LONG64)(hashed * PAGE));
+    InterlockedAdd64(&d_ticks, qpc_now() - t0);
+    if (fail) return UINT64_MAX;
+    if (reset && n == max) resume_addr = addr, resume_size = size, resume_at = pages[n - 1] + PAGE;
+    return n;
+}
+
+int mem_dirty_hash(void) { return dirty_hash; }
+
+void mem_dirty_track(uint64_t addr, uint64_t size, int on) {
+    if (!dirty_hash || !size) return;
+    uint64_t lo = addr & ~(PAGE - 1), hi = align_up(addr + size, PAGE);
+    if (!watched(lo, hi - lo)) return;
+    int64_t delta = 0;
+    AcquireSRWLockExclusive(&dlock);
+    for (uint64_t a = lo; a < hi; a += PAGE) {
+        DChunk **s = dchunk_slot(a), *c = *s;
+        if (!c) {
+            if (!on) { a = (a | ((1ull << DCHUNK_SHIFT) - 1)) + 1 - PAGE; continue; }
+            c = calloc(1, sizeof *c);
+            if (!c) rt_fatal("memory: out of memory for the page hashes");
+            __atomic_store_n(s, c, __ATOMIC_RELEASE);
+        }
+        uint16_t *st = &c->n[(a >> 12) & (DCHUNK_PAGES - 1)], k = *st & ~DFRESH;
+        if (on) {
+            if (k == (uint16_t)~DFRESH) rt_fatal("memory: page %#llx is in too many imports", (unsigned long long)a);
+            delta += !k;
+            *st = (uint16_t)((k + 1) | DFRESH);
+        } else if (k) {
+            delta -= k == 1;
+            *st = (uint16_t)((k - 1) | (*st & DFRESH));
+        }
+    }
+    ReleaseSRWLockExclusive(&dlock);
+    InterlockedAdd64(&d_tracked, delta * (int64_t)PAGE);
+}
+
+void mem_dirty_absorb(uint64_t addr, uint64_t size) {
+    if (!dirty_hash || !size) return;
+    uint64_t lo = addr & ~(PAGE - 1), hi = align_up(addr + size, PAGE), hashed = 0;
+    if (!watched(lo, hi - lo)) return;
+    DSpan sp[32];
+    LONG64 t0 = qpc_now();
+    AcquireSRWLockShared(&lock);
+    AcquireSRWLockShared(&dlock);
+    int nsp = stack_spans(lo, hi, sp, 32);
+    for (uint64_t a = lo; a < hi;) {
+        uint64_t ce = (a | ((1ull << DCHUNK_SHIFT) - 1)) + 1;
+        DChunk *c = __atomic_load_n(dchunk_slot(a), __ATOMIC_ACQUIRE);
+        if (ce > hi) ce = hi;
+        for (; c && a < ce; a += PAGE) {
+            unsigned i = (unsigned)((a >> 12) & (DCHUNK_PAGES - 1));
+            uint16_t st = __atomic_load_n(&c->n[i], __ATOMIC_RELAXED);
+            if (!(st & ~DFRESH) || (st & DFRESH) || !page_readable(a, sp, nsp)) continue;   // a fresh page stays reported
+            __atomic_store_n(&c->h[i], page_hash(a), __ATOMIC_RELAXED);
+            hashed++;
+        }
+        a = ce;
+    }
+    ReleaseSRWLockShared(&dlock);
+    ReleaseSRWLockShared(&lock);
+    InterlockedAdd64(&d_hashed, (LONG64)(hashed * PAGE));
+    InterlockedAdd64(&d_ticks, qpc_now() - t0);
+}
+
+void mem_dirty_stats(uint64_t *tracked, uint64_t *hashed, double *ms) {
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    *tracked = (uint64_t)__atomic_load_n(&d_tracked, __ATOMIC_RELAXED);
+    *hashed = (uint64_t)InterlockedExchange64(&d_hashed, 0);
+    *ms = (double)InterlockedExchange64(&d_ticks, 0) * 1000.0 / (double)f.QuadPart;
+}
+
 uint64_t mem_written_pages(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max) {
-    return written_pages(addr, size, pages, max, WRITE_WATCH_FLAG_RESET);
+    return dirty_hash ? written_hashed(addr, size, pages, max, WRITE_WATCH_FLAG_RESET)
+                      : written_pages(addr, size, pages, max, WRITE_WATCH_FLAG_RESET);
 }
 
 uint64_t mem_written_peek(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max) {
-    return written_pages(addr, size, pages, max, 0);
+    return dirty_hash ? written_hashed(addr, size, pages, max, 0) : written_pages(addr, size, pages, max, 0);
 }
 
 static uint64_t image_bytes(void) {
