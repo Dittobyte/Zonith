@@ -388,9 +388,48 @@ static LONG64 qpc_now(void) {
     return t.QuadPart;
 }
 
+// Large queries hash on the thread pool: a query gathers its tracked readable pages, the pool's callbacks and the
+// caller hash them in batches, and the compare pass below takes the hashes in the same order. The committed state and
+// the tracked pages cannot change in between (`lock` and dlock stay held). 4 KiB pages hash at 30-36 GB/s on one
+// core (wwdiag), so a query of 1 MiB or more is worth the hand-off. On an 8700F with DDR5 the title scene hashes about
+// 370 MiB a frame in about 64 such queries: 8.5 ms on one thread, 7.2 ms with three helpers (the memory bus is the
+// limit there); the Z1's single core reads more slowly than its bus allows.
+#define PAR_MIN_PAGES 256
+#define PAR_BATCH 32
+typedef struct { const uint64_t *addr; uint64_t *out; LONG n; volatile LONG next; } HashJob;
+static int hash_helpers = -1;   // thread-pool callbacks per large query; 0: the caller hashes alone
+
+static void hash_batches(HashJob *j) {
+    for (LONG i; (i = InterlockedExchangeAdd(&j->next, PAR_BATCH)) < j->n;)
+        for (LONG k = i, e = i + PAR_BATCH < j->n ? i + PAR_BATCH : j->n; k < e; k++) j->out[k] = page_hash(j->addr[k]);
+}
+
+static VOID CALLBACK hash_cb(PTP_CALLBACK_INSTANCE inst, PVOID ctx, PTP_WORK w) {
+    (void)inst, (void)w;
+    hash_batches(ctx);
+}
+
+static void hash_parallel(const uint64_t *addr, uint64_t *out, uint64_t n) {
+    if (hash_helpers < 0) {
+        SYSTEM_INFO si;
+        GetSystemInfo(&si);
+        int h = (int)si.dwNumberOfProcessors / 4;   // the game itself keeps most threads busy on few cores
+        hash_helpers = h > 3 ? 3 : h;
+    }
+    HashJob j = {addr, out, (LONG)n, 0};
+    PTP_WORK w = hash_helpers ? CreateThreadpoolWork(hash_cb, &j, NULL) : NULL;
+    for (int i = 0; w && i < hash_helpers; i++) SubmitThreadpoolWork(w);
+    hash_batches(&j);
+    if (w) {
+        WaitForThreadpoolWorkCallbacks(w, TRUE);   // callbacks not started yet have nothing left to take
+        CloseThreadpoolWork(w);
+    }
+}
+
 // A RESET query that filled pages[] to max resumes after the last page it reported when the same thread asks again for
 // the same range (the callers loop until a short answer); without this, each round would hash the range from the start.
 static __thread uint64_t resume_addr, resume_size, resume_at;
+static __thread uint64_t *par_addr, *par_hash, par_cap;   // hash_parallel input and output of this thread's query
 
 static uint64_t written_hashed(uint64_t addr, uint64_t size, uint64_t *pages, uint64_t max, DWORD flags) {
     if (!max || !size) return 0;
@@ -407,6 +446,30 @@ static uint64_t written_hashed(uint64_t addr, uint64_t size, uint64_t *pages, ui
     AcquireSRWLockShared(&lock);
     AcquireSRWLockShared(&dlock);
     int nsp = stack_spans(lo, hi, sp, 32);
+    // Large query: the tracked readable pages from a on, hashed ahead (the compare pass meets them in this order).
+    uint64_t np = 0, pi = 0;
+    if (hi - a >= PAR_MIN_PAGES * PAGE) {
+        for (uint64_t x = a; x < hi;) {
+            uint64_t ce = (x | ((1ull << DCHUNK_SHIFT) - 1)) + 1;
+            DChunk *c = __atomic_load_n(dchunk_slot(x), __ATOMIC_ACQUIRE);
+            if (ce > hi) ce = hi;
+            for (; c && x < ce; x += PAGE) {
+                if (!(__atomic_load_n(&c->n[(x >> 12) & (DCHUNK_PAGES - 1)], __ATOMIC_RELAXED) & ~DFRESH) ||
+                    !page_readable(x, sp, nsp))
+                    continue;
+                if (np == par_cap) {
+                    par_cap = par_cap ? par_cap * 2 : 4096;
+                    par_addr = realloc(par_addr, par_cap * sizeof *par_addr);
+                    par_hash = realloc(par_hash, par_cap * sizeof *par_hash);
+                    if (!par_addr || !par_hash) rt_fatal("memory: out of memory for a hash query");
+                }
+                par_addr[np++] = x;
+            }
+            x = ce;
+        }
+        if (np >= PAR_MIN_PAGES) hash_parallel(par_addr, par_hash, np);
+        else np = 0;
+    }
     // Untracked pages go to GetWriteWatch in runs; the run is flushed before a tracked page so pages[] stays sorted.
 #define FLUSH_WW(end)                                                                                                   \
     do {                                                                                                                \
@@ -439,7 +502,7 @@ static uint64_t written_hashed(uint64_t addr, uint64_t size, uint64_t *pages, ui
                 if (!(st & DFRESH)) __atomic_fetch_or(&c->n[i], DFRESH, __ATOMIC_RELAXED);
                 continue;
             }
-            uint64_t h = page_hash(a);
+            uint64_t h = pi < np && par_addr[pi] == a ? par_hash[pi++] : page_hash(a);
             hashed++;
             if (!(st & DFRESH) && h == __atomic_load_n(&c->h[i], __ATOMIC_RELAXED)) continue;
             pages[n++] = a;
