@@ -347,6 +347,13 @@ void kern_ap_stub(void);
 static void ap_init(void) {
     if (g_ap >= 0) return;
     const char *e = cfg_value("TOTK_ASYNC_PREEMPT");
+    // Under Wine every interruption is a SuspendThread/GetThreadContext round trip through wineserver and a signal;
+    // measured on Proton 11 (Steam Deck class Z1), turning it off made frames about a third faster. A set value wins.
+    const char *why = "";
+    if (!cfg_get("TOTK_ASYNC_PREEMPT") && GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version")) {
+        e = "0";
+        why = " (default under Wine)";
+    }
     g_ap = strcmp(e, "0") != 0;
     g_ap_int = g_ap && strcmp(e, "2") != 0;
     if (g_ap) {
@@ -373,8 +380,9 @@ static void ap_init(void) {
             kern_host_track = 1;
         }
     }
-    rt_log("kernel: asynchronous preemption of virtual cores %s, priority inheritance and preemption disable %s; lifted "
-           "code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off", g_ap ? "on (TOTK_ASYNC_PREEMPT=0 turns all off)" : "off",
+    rt_log("kernel: asynchronous preemption of virtual cores %s, priority inheritance and preemption disable %s%s; "
+           "lifted code exe+%#llx-exe+%#llx", g_ap_int ? "on" : "off",
+           g_ap ? "on (TOTK_ASYNC_PREEMPT=0 turns all off)" : "off", why,
            (unsigned long long)(g_gen_lo ? g_gen_lo - (uintptr_t)GetModuleHandleW(NULL) : 0),
            (unsigned long long)(g_gen_hi ? g_gen_hi - (uintptr_t)GetModuleHandleW(NULL) : 0));
 }
