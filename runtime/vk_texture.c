@@ -528,7 +528,11 @@ static uint64_t n_pressure_drops;
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
         const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
-        vram_pressure = s && *s ? atoi(s) : 90;
+        // Unset under Wine: off. Proton here means a Ryzen Z1 class APU, whose "device-local" heap is a carve-out of the
+        // same RAM, so going over its budget costs nothing, while dropping textures costs re-uploads and ASTC decodes on
+        // the render thread (as copy mode ignores the budget in vk_memory.c mirror).
+        int wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != NULL;
+        vram_pressure = s && *s ? atoi(s) : wine ? 0 : 90;
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
         rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
     }
