@@ -23,6 +23,10 @@ the game's own images and glyphs, nothing added:
   stays right.
 - every other prompt is text: the button glyphs U+E040 A, U+E041 B, U+E042 X, U+E043 Y of scft/External.bfotf, the
   same font in each Font/Font*.Nin_NX_NVN.bfarc.zs. Their CFF outlines and horizontal metrics are swapped.
+--aspect <w>x<h> (a game resolution wider than 16:9, such as 3440x1440) also lays the UI out for that shape
+(tools/ultrawide_layout.py): menus stay 16:9 in the middle, full-screen backgrounds cover the width and the HUD moves
+to the screen's corners. totk.exe loads that overlay from romfs-patches-<w>x<h> when the game resolution is that size
+(runtime/romfs.c overlay_init); the camera's side of it is the patch set aspect (recomp/patches-v143.txt).
 
 Input: build/extracted/<version>/romfs (romfs.bin and index.json, verified by tools/extract.py). Output:
 build/<version>/romfs-patches/<path> by default (romfs-patches-xbox with --xbox-prompts), and <out>/manifest.tsv (path, size, SHA-256 of the overlay, SHA-256 of the original). Run with .venv-py314.
@@ -30,6 +34,7 @@ build/<version>/romfs-patches/<path> by default (romfs-patches-xbox with --xbox-
 import argparse
 import compression.zstd as zstd
 import hashlib
+import importlib.util
 import json
 import re
 import struct
@@ -42,6 +47,7 @@ ap.add_argument('--romfs', type=Path, help='default build/extracted/<version>/ro
 ap.add_argument('--out', type=Path,
                 help='default build/<version>/romfs-patches (romfs-patches-xbox with --xbox-prompts)')
 ap.add_argument('--xbox-prompts', action='store_true', help='swap the A/B and X/Y button prompts as well')
+ap.add_argument('--aspect', help='<w>x<h> of a game resolution wider than 16:9: also lay the UI out for it')
 args = ap.parse_args()
 args.romfs = args.romfs or root / 'build/extracted' / args.version / 'romfs'
 args.out = args.out or root / 'build' / args.version / ('romfs-patches-xbox' if args.xbox_prompts else 'romfs-patches')
@@ -352,8 +358,16 @@ for member, panes in MEMBERS.items():
         changed.append(name)
     assert sorted(changed) == sorted(panes), (member, changed)
     patched[member] = changed
+layout = []
+if args.aspect:
+    width, height = (int(v) for v in args.aspect.lower().split('x'))
+    spec = importlib.util.spec_from_file_location('ultrawide_layout', Path(__file__).with_name('ultrawide_layout.py'))
+    ultrawide = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ultrawide)
+    layout = ultrawide.apply(blarc, members, width, height)
 diff = [i for i in range(len(original)) if original[i] != blarc[i]]
-assert diff and all(any(lo <= i < hi for lo, hi in (members[m] for m in MEMBERS)) for i in diff), diff
+touched = [members[m] for m in (*MEMBERS, *layout)]
+assert diff and all(any(lo <= i < hi for lo, hi in touched) for i in diff), diff
 outputs = {ARCHIVE: bytes(blarc)}   # RomFS path -> new contents (before compression)
 if args.xbox_prompts:
     bntx_swap(blarc, members['timg/__Combined.bntx'][0], KEY_TEXTURES)
@@ -399,4 +413,5 @@ for path, contents in outputs.items():
                                        + ''.join(line + '\n' for line in lines))
 print(json.dumps(dict(status='pass', path=ARCHIVE, members=patched, changed_bytes=len(diff),
                       xbox_prompts=dict(textures=KEY_TEXTURES, letters=letters, messages=messages, fonts=FONTS)
-                      if args.xbox_prompts else None)))
+                      if args.xbox_prompts else None,
+                      ultrawide_layout=dict(aspect=args.aspect, members=len(layout)) if args.aspect else None)))

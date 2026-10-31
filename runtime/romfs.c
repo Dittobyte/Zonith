@@ -456,7 +456,9 @@ static void overlay_init(void) {
     // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py)
     // With pad_layout = xbox_prompts, romfs-patches-xbox in its place: the same patches with the A/B and X/Y prompts
     // swapped (make_romfs_patches.py --xbox-prompts). The game reads the archives once at boot, so the prompts stay
-    // until restart even though the layout itself changes live.
+    // until restart even though the layout itself changes live. Otherwise a game resolution that is not 16:9 takes
+    // romfs-patches-<w>x<h> when it is there: the same overlay with the UI laid out for that shape (--aspect). The two
+    // don't combine: Xbox prompts win and the UI keeps its 16:9 layout.
     char def[2100], xbox[2100];
     const char *patches = cfg_get("TOTK_ROMFS_PATCHES");
     xbox_prompts_ready =
@@ -471,6 +473,18 @@ static void overlay_init(void) {
     } else if (want_xbox) {
         rt_log("RomFS overlay: pad_layout = xbox_prompts, but %s; Switch prompts stay",
                patches ? "TOTK_ROMFS_PATCHES is set" : "romfs-patches-xbox has no manifest.tsv (run the setup again)");
+    }
+    unsigned out[2];
+    res_wanted(out);
+    if (!patches && (unsigned long long)out[0] * 9 != (unsigned long long)out[1] * 16) {
+        if (snprintf(def, sizeof def, "%s/romfs-patches-%ux%u/manifest.tsv", index_dir, out[0], out[1]) < (int)sizeof def &&
+            GetFileAttributesA(def) != INVALID_FILE_ATTRIBUTES) {
+            def[strlen(def) - strlen("/manifest.tsv")] = 0;
+            patches = def;
+        } else {
+            rt_log("RomFS overlay: no romfs-patches-%ux%u for this game resolution, the UI keeps its 16:9 layout "
+                   "(tools/make_romfs_patches.py --aspect %ux%u)", out[0], out[1], out[0], out[1]);
+        }
     }
     if (!patches && snprintf(def, sizeof def, "%s/romfs-patches/manifest.tsv", index_dir) < (int)sizeof def &&
         GetFileAttributesA(def) != INVALID_FILE_ATTRIBUTES) {
