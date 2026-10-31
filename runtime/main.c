@@ -542,6 +542,9 @@ int main(int argc, char **argv) {
     // A restart from the settings menu (gfx_present.c gfx_window_closed) starts this process while the one it replaces
     // is still exiting: its log, RomFS and saves are free once it is gone.
     if (plat_restart_wait(30000) < 0) rt_log("restart: the previous process still runs after 30 s; starting anyway");
+    // The lifted code on 2 MiB pages (platform/linux.c plat_huge_text), while this is the only thread
+    const char *ht = cfg_get("TOTK_HUGE_TEXT");
+    uint64_t huge_pages = 0, huge_text = !ht || !*ht || strcmp(ht, "0") ? plat_huge_text(&huge_pages) : 0;
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
     plat_crash_hook(crash_handler);
@@ -582,6 +585,9 @@ int main(int argc, char **argv) {
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
+    if (huge_text)
+        rt_log("text: %.0f MiB of code moved to memory asking for 2 MiB pages; the process has %.0f MiB in such pages "
+               "(TOTK_HUGE_TEXT=0 skips it)", huge_text / 1048576.0, huge_pages / 1048576.0);
     // The probes and --boot print or check the SVC and host call counts; the game itself (--seconds included, which
     // times it) pays for them only when tracing asks (host.h rt_stats_on).
     rt_stats_on = mode != NULL || (rt_trace & (RT_TRACE_SVC | RT_TRACE_HOSTCALL)) != 0;
