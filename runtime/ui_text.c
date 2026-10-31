@@ -85,6 +85,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Moves the steps where shadows turn softer (the game's 20, 40, 80 and 160 m) further "
                                   "away. Spreads the shadow map over more ground: raise Shadow resolution with it. "
                                   "Takes effect at the next start.",
+    [UI_MENU_DLAA] = "NVIDIA DLAA",
+    [UI_MENU_DLAA_DESC] = "DLSS anti-aliasing of the 3D scene at its own resolution (NVIDIA RTX GPUs; nvngx_dlss.dll next to "
+                          "totk.exe). Smoother edges and less shimmer for about 3 ms a frame.",
+    [UI_MENU_FXAA] = "Game anti-aliasing (FXAA)",
+    [UI_MENU_FXAA_DESC] = "The game's own FXAA edge smoothing. It blurs fine detail a little; with DLAA on it is not needed.",
 
     [UI_MENU_FPS_LIMIT] = "Frame rate limit",
     [UI_MENU_FPS_LIMIT_DESC] = "The most frames per second the game draws. Above 60 is experimental and needs Game speed "
@@ -351,6 +356,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_SHADOW_RANGE_DESC] = "Отодвигает границы, за которыми тени становятся мягче (в игре 20, 40, 80 и 160 м). "
                                   "Карта теней растягивается на большую площадь, поэтому вместе с этим поднимайте "
                                   "разрешение теней. Действует после перезапуска.",
+    [UI_MENU_DLAA] = "NVIDIA DLAA",
+    [UI_MENU_DLAA_DESC] = "Сглаживание 3D-сцены через DLSS в её собственном разрешении (видеокарты NVIDIA RTX; nvngx_dlss.dll "
+                          "рядом с totk.exe). Ровнее края и меньше мерцания, около 3 мс на кадр.",
+    [UI_MENU_FXAA] = "Сглаживание игры (FXAA)",
+    [UI_MENU_FXAA_DESC] = "Собственное сглаживание FXAA. Слегка размывает мелкие детали; с DLAA оно не нужно.",
 
     [UI_MENU_FPS_LIMIT] = "Ограничение частоты кадров",
     [UI_MENU_FPS_LIMIT_DESC] = "Наибольшее число кадров в секунду. Выше 60 — экспериментальный режим, нужна «Скорость "
