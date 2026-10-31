@@ -131,10 +131,13 @@ void rec_begin(VkCommandBuffer cb) {
     if (mode < 0) {
         // Default off on AMD GPUs: with the recorder their drivers lost the device within the first frames or at menu
         // opens, 1 boot in 3 on an RX 9070 XT, and TOTK_VK_RECORDER=0 ended it for three users (issue #5); under RADV
-        // the kernel saw an illegal opcode at the end of a command buffer (issue #40). The cause is not found.
+        // the kernel saw an illegal opcode at the end of a command buffer (issue #40). The cause is not found. Under Wine
+        // (Proton on a Ryzen Z1 with RADV) it stays on: a day of Deck runs lost no device, and it saves ~1.7 ms a frame
+        // there (docs/proton.md).
         const char *set = cfg_get("TOTK_VK_RECORDER");
-        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
-        if (!mode && vk_caps.amd && !(set && *set))
+        int wine = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != NULL;
+        mode = rt_knob("VK_RECORDER", vk_caps.amd && !wine ? "0" : "1");
+        if (!mode && vk_caps.amd && !wine && !(set && *set))
             rt_log("vk_rec: no recorder thread on AMD GPUs (TOTK_VK_RECORDER=1 turns it on)");
         if (mode) {
             wake_ev = CreateEventA(NULL, FALSE, FALSE, NULL);
