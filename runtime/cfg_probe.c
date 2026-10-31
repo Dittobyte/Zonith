@@ -251,13 +251,13 @@ int probe_cfg(void) {
     input_map_stick(dn, 0, st);
     CHECK(st[0] == 0 && st[1] == 0, "keys: arrows leave the left stick alone");
     input_mouse_stick(30, 0, 1.0 / 60, 1, st);
-    CHECK(st[0] == 32767 * 1800 / 3000 && st[1] == 0, "mouse: 30 counts in 1/60 s is 60% right");
+    CHECK(st[0] == 24903 && st[1] == 0, "mouse: 30 counts in 1/60 s (60% proportional) report 76% with the tilt floor");
     input_mouse_stick(0, -10, 1.0 / 60, 1, st);
-    CHECK(st[0] == 0 && st[1] > 0, "mouse: moving up is stick up");
+    CHECK(st[0] == 0 && st[1] == 17039, "mouse: moving up is stick up (52% with the tilt floor)");
     input_mouse_stick(30, 0, 1.0 / 30, 1, st);
-    CHECK(st[0] == 32767 * 900 / 3000, "mouse: the same counts over twice the time are half the deflection");
+    CHECK(st[0] == 19005, "mouse: the same counts over twice the time tilt less (58%, the floor holds the low end up)");
     input_mouse_stick(15, 0, 1.0 / 60, 2, st);
-    CHECK(st[0] == 32767 * 1800 / 3000, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
+    CHECK(st[0] == 24903, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
     input_mouse_stick(1000, 1000, 1.0 / 60, 1, st);
     CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
     input_mouse_stick(30, 0, 1.0 / 60, 0, st);

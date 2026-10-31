@@ -96,7 +96,7 @@ The inverse needs the game's stick response. The defaults below were measured on
 
 | Setting (`totk.ini` key) | Default | Meaning |
 |---|---|---|
-| `mouse_mode` | `native` | `native` as above, `linear` the older mapping |
+| `mouse_mode` | `native` | `native` as above, `linear` the older mapping (any movement tilts the stick at least 40%, past the game's dead zone) |
 | `mouse_y_ratio` | 1 (0.25 to 4) | vertical sensitivity relative to horizontal |
 | `mouse_curve` | 2 (1 to 3) | the game's response exponent after its dead zone; 1 is linear |
 | `mouse_deadzone` | 0.02 (0 to 0.5) | the game's dead zone, as a fraction of full deflection |

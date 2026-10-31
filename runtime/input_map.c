@@ -12,6 +12,8 @@
 #define STICK_MAX 32767
 #define DIAGONAL 23170   // STICK_MAX / sqrt(2)
 #define MOUSE_FULL_CPS 3000.0
+#define MOUSE_TILT_FLOOR 0.40
+#define MOUSE_MIN_TILT 0.02
 
 #define DEFAULT_KEYS \
     {KEY_W, B_SL_UP}, {KEY_A, B_SL_LEFT}, {KEY_S, B_SL_DOWN}, {KEY_D, B_SL_RIGHT},                  /* move */ \
@@ -327,14 +329,20 @@ void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]) {
     out[1] = dy * m;
 }
 
+// The mouse camera as a right-stick sample: counts per second times sens of full (MOUSE_FULL_CPS counts a second at
+// sens 1), then the length floored at MOUSE_TILT_FLOOR of full so every real movement turns the camera at once and
+// grows with the speed to full; the direction is the movement's own. Below MOUSE_MIN_TILT nothing reports.
 void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]) {
     out[0] = out[1] = 0;
     if (!(dt_s > 0) || !(sens > 0)) return;
     double k = STICK_MAX * (double)sens / (MOUSE_FULL_CPS * dt_s);
     double x = dx * k, y = -dy * k, len = sqrt(x * x + y * y);
-    if (len > STICK_MAX) { x *= STICK_MAX / len; y *= STICK_MAX / len; }
-    out[0] = (int32_t)lrint(x);
-    out[1] = (int32_t)lrint(y);
+    double m = len / STICK_MAX;
+    if (m < MOUSE_MIN_TILT) return;
+    double mag = (MOUSE_TILT_FLOOR + (1.0 - MOUSE_TILT_FLOOR) * (m > 1 ? 1 : m)) * STICK_MAX;
+    double s = mag / len;
+    out[0] = (int32_t)lrint(x * s);
+    out[1] = (int32_t)lrint(y * s);
 }
 
 void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
