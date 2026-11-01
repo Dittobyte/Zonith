@@ -11,6 +11,8 @@ int ikb_captured(void);                       // the cursor is captured for the 
 void ikb_mouse_take(int32_t *dx, int32_t *dy);   // raw mouse motion since the last call, in counts
 void ikb_cursor_update(void);                 // what input_cursor_allowed says may have changed
 void ikb_menu_closed(void);                   // the menu closed: a capture that Esc gave up comes back
+int ikb_wheel_take(void);                     // takes accumulated mouse wheel delta steps since last call
 
 // ---- what input.c provides the back end
 int input_cursor_allowed(void);               // no text entry or menu open, the mouse camera on, input not disabled
+int input_in_menu(void);                      // 1 while game menu/inventory/map cursor mode is active

@@ -83,6 +83,7 @@ uint32_t input_key_char(int key) {
 
 // ---- mouse camera: raw motion accumulated by the window thread, one stick sample per presented frame
 static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
+static volatile LONG mouse_wheel_steps;    // accumulated wheel notches for menu tab navigation
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
@@ -147,6 +148,14 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     case WM_SETCURSOR:
         if (cur_captured && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
         break;
+    case WM_MOUSEWHEEL:
+        if (!menu_is_open()) {
+            short delta = (short)HIWORD(w);
+            InterlockedAdd(&mouse_wheel_steps, delta / WHEEL_DELTA);
+            *res = 0;
+            return 1;
+        }
+        break;
     case WM_SYSCOMMAND:   // Alt pressed alone would enter the window menu loop, which stalls the game: Alt is a game key
         if ((w & 0xFFF0) == SC_KEYMENU && l == 0) { *res = 0; return 1; }
         break;
@@ -154,7 +163,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         if (w == VK_ESCAPE && !(cur_rel & CUR_REL)) { cur_rel_update(rel_esc); cursor_update(h); }
         break;
     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:   // client area only; poll_merged drops the click
-        if (cur_rel & CUR_REL) { cur_rel_update(rel_clear); cursor_update(h); }
+        if (!input_in_menu() && (cur_rel & CUR_REL)) { cur_rel_update(rel_clear); cursor_update(h); }
         break;
     case WM_MOUSEACTIVATE:   // sent before WM_ACTIVATEAPP: a title bar or border click must not capture
         if (LOWORD(l) != HTCLIENT) cur_rel_update(rel_title);
@@ -206,6 +215,10 @@ int ikb_captured(void) { return cur_captured != 0; }
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);
     *dy = InterlockedExchange(&mouse_dy, 0);
+}
+
+int ikb_wheel_take(void) {
+    return (int)InterlockedExchange(&mouse_wheel_steps, 0);
 }
 
 void ikb_cursor_update(void) { cursor_update(gfx_window_handle()); }

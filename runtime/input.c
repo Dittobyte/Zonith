@@ -489,6 +489,15 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
     if (!pad_physical(pd)) return 0;
+    static uint8_t prev_pd[PAD_COUNT];
+    if ((pd[PAD_START] && !prev_pd[PAD_START]) || (pd[PAD_BACK] && !prev_pd[PAD_BACK])) {
+        g_game_menu = !g_game_menu;
+        ikb_cursor_update();
+    } else if (g_game_menu && ((pd[PAD_SOUTH] && !prev_pd[PAD_SOUTH]) || (pd[PAD_EAST] && !prev_pd[PAD_EAST]))) {
+        g_game_menu = 0;
+        ikb_cursor_update();
+    }
+    memcpy(prev_pd, pd, sizeof prev_pd);
     *b |= input_map_pad_buttons(pd, pad_layout_get());
     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
     stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
@@ -520,20 +529,65 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (state == 1) pad_read(&b, sl, sr);
         if (ikb_foreground()) {
             uint8_t down[KEY_COUNT] = {0};
-            // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
-            // (the click that refocused the window) is ignored until it is released.
+            static uint8_t prev_down[KEY_COUNT];
+            uint8_t just_pressed[KEY_COUNT] = {0};
+
+            for (int k = 1; k < KEY_COUNT; k++) {
+                down[k] = ikb_down(k);
+                just_pressed[k] = down[k] && !prev_down[k];
+                prev_down[k] = down[k];
+            }
+
+            // Tab (Inventory), M (Map), Alt or Middle-Click toggles cursor mode
+            if (just_pressed[KEY_TAB] || just_pressed[KEY_M] || just_pressed[KEY_LALT] || just_pressed[KEY_MOUSE_M]) {
+                extern volatile int32_t g_game_menu;
+                g_game_menu = !g_game_menu;
+                ikb_cursor_update();
+            } else {
+                extern volatile int32_t g_game_menu;
+                if (g_game_menu && (just_pressed[KEY_LSHIFT] || just_pressed[KEY_MOUSE_R] || ikb_escape())) {
+                    g_game_menu = 0;
+                    ikb_cursor_update();
+                }
+            }
+
+            extern volatile int32_t g_game_menu;
+            int in_menu = g_game_menu != 0;
             static int was_captured;
             static uint8_t mouse_ignore[KEY_COUNT];
             int cap = ikb_captured();
             for (int k = 1; k < KEY_COUNT; k++) {
-                down[k] = ikb_down(k);
                 if (k < KEY_MOUSE_L || k > KEY_MOUSE_X2) continue;
                 if (cap && !was_captured) mouse_ignore[k] = down[k];
                 if (!down[k]) mouse_ignore[k] = 0;
-                if (!cap || mouse_ignore[k]) down[k] = 0;
+                if ((!cap && !in_menu) || mouse_ignore[k]) down[k] = 0;
             }
             was_captured = cap;
-            b |= input_map_buttons(down);
+
+            uint8_t map_down[KEY_COUNT];
+            memcpy(map_down, down, sizeof map_down);
+            if (in_menu) {
+                // In menu mode, suppress mouse attack/shield mapping
+                map_down[KEY_MOUSE_L] = 0;
+                map_down[KEY_MOUSE_R] = 0;
+                map_down[KEY_MOUSE_M] = 0;
+            }
+            b |= input_map_buttons(map_down);
+
+            if (in_menu) {
+                // Direct click interaction:
+                // LMB -> A button (interact / select / inspect item)
+                if (down[KEY_MOUSE_L]) b |= (1ULL << B_A);
+                // RMB -> B button (cancel / back)
+                if (down[KEY_MOUSE_R]) b |= (1ULL << B_B);
+                // Wheel -> L / R (tab navigation)
+                int wheel = ikb_wheel_take();
+                if (wheel > 0) b |= (1ULL << B_L);
+                else if (wheel < 0) b |= (1ULL << B_R);
+            } else {
+                (void)ikb_wheel_take();
+            }
+
             int32_t k[2];
             walk_get();
             int walk = walk_key != KEY_NONE && down[walk_key];
@@ -569,10 +623,15 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
 // g_block: 0 off, 1 text entry open, 2 closed, waiting for the release. The cursor is released while it is open.
 static volatile int32_t g_block;
 static volatile int32_t g_menu;   // the in-game menu, the same way (input_menu)
+volatile int32_t g_game_menu;      // in-game menu/inventory/map cursor mode
+
+int input_in_menu(void) {
+    return g_game_menu != 0;
+}
 
 int input_cursor_allowed(void) {
     const char *in = cfg_get("TOTK_INPUT");
-    return g_block != 1 && g_menu != 1 && mouse_sens_get() > 0 && !(in && !strcmp(in, "none"));
+    return g_block != 1 && g_menu != 1 && !g_game_menu && mouse_sens_get() > 0 && !(in && !strcmp(in, "none"));
 }
 
 void input_block(int on) {

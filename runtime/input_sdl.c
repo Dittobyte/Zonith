@@ -222,3 +222,5 @@ void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = plat_xchg32(&mouse_dx, 0);
     *dy = plat_xchg32(&mouse_dy, 0);
 }
+
+int ikb_wheel_take(void) { return 0; }
