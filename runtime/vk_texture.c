@@ -571,14 +571,17 @@ static uint64_t n_pressure_drops;
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
         const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
-        vram_pressure = s && *s ? atoi(s) : 90;
+        // Unset under Wine: off. Proton here means a Ryzen Z1 class APU, whose "device-local" heap is a carve-out of the
+        // same RAM, so going over its budget costs nothing, while dropping textures costs re-uploads and ASTC decodes on
+        // the render thread. Running short of system memory (vk_mem_system_low) still drops them.
+        vram_pressure = s && *s ? atoi(s) : plat_is_wine() ? 0 : 90;
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 90;
         rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
     }
-    if (!vram_pressure || !rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
+    if (!rel_head || submit_epoch & 7) return;   // the budget query every 8 submits
     uint64_t used, budget;
     int exact;
-    int over = vk_mem_vram(&used, &budget, &exact) && used > budget / 100 * (uint64_t)vram_pressure;
+    int over = vram_pressure && vk_mem_vram(&used, &budget, &exact) && used > budget / 100 * (uint64_t)vram_pressure;
     if (!over && !vk_mem_system_low()) return;
     int dropped = 0;
     for (Tex *e = rel_head, *next; e && dropped < PRESSURE_STEP; e = next) {
