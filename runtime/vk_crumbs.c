@@ -16,6 +16,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 static PFN_vkCmdWriteBufferMarkerAMD write_marker;
 static VkBuffer buf;
@@ -27,6 +28,10 @@ int vk_pass_marks_on;
 static int pm_amd;                          // marks into words 2 and 3
 static PFN_vkCmdSetCheckpointNV set_checkpoint;
 static void pass_marks_init(VkCtx *c);
+static void pass_times_init(VkCtx *c);
+static void pass_times_poll(void);
+static VkQueryPool pt_pool;                 // TOTK_PASS_TIMES: two timestamps per mark slot
+static uint32_t pt_owner[VK_PASS_MARKS];    // the mark whose timestamps the slot holds until read back (0: free)
 
 static void buffer_init(VkCtx *c) {
     write_marker = (PFN_vkCmdWriteBufferMarkerAMD)vkGetDeviceProcAddr(c->device, "vkCmdWriteBufferMarkerAMD");
@@ -108,7 +113,8 @@ static void pass_marks_init(VkCtx *c) {
     set_checkpoint = c->has_nv_checkpoints
                          ? (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(c->device, "vkCmdSetCheckpointNV") : NULL;
     pm_amd = !off && write_marker && words;
-    vk_pass_marks_on = pm_amd || set_checkpoint;
+    pass_times_init(c);
+    vk_pass_marks_on = pm_amd || set_checkpoint || pt_pool;
     if (vk_pass_marks_on)
         rt_log("vk: pass marks on (%s%s%s; TOTK_PASS_CRUMBS=0 turns them off%s)", pm_amd ? "VK_AMD_buffer_marker" : "",
                pm_amd && set_checkpoint ? " and " : "", set_checkpoint ? "VK_NV_device_diagnostic_checkpoints" : "",
@@ -123,6 +129,10 @@ void vk_pass_mark_cmd(VkCommandBuffer cb, uint32_t id, int end) {
         write_marker(cb, end ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, buf,
                      end ? 12 : 8, id);
     if (set_checkpoint) set_checkpoint(cb, (const void *)(uintptr_t)((uint64_t)id << 1 | (end != 0)));
+    uint32_t slot = id & (VK_PASS_MARKS - 1);
+    if (pt_pool && __atomic_load_n(&pt_owner[slot], __ATOMIC_ACQUIRE) == id)
+        vkCmdWriteTimestamp(cb, end ? VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, pt_pool,
+                            2 * slot + (end != 0));
 }
 
 VkPassMark *vk_pass_mark_begin(VkCommandBuffer cb, int kind, uint64_t fence) {
@@ -130,6 +140,11 @@ VkPassMark *vk_pass_mark_begin(VkCommandBuffer cb, int kind, uint64_t fence) {
     uint32_t id = ++seq;
     if (!id) id = ++seq;   // 0 means no mark
     VkPassMark *m = &ring[id & (VK_PASS_MARKS - 1)];
+    if (pt_pool) {
+        if (!(id & 63)) pass_times_poll();
+        uint32_t *o = &pt_owner[id & (VK_PASS_MARKS - 1)];
+        if (!*o) __atomic_store_n(o, id, __ATOMIC_RELEASE);   // a slot still unread from the last lap: this mark untimed
+    }
     m->id = id, m->kind = (uint8_t)kind, m->fence = fence, m->draws = UINT32_MAX;
     rec_pass_mark(cb, id, 0);
     return m;
@@ -159,6 +174,7 @@ static unsigned long long shader_id(const GfxShader *s) {
     return v;
 }
 
+static void describe_rec(const VkPassMark *m, char *o, size_t size);
 static void describe_mark(uint32_t id, char *o, size_t size) {
     const VkPassMark *m = vk_pass_mark_record(id);
     if (!id) {
@@ -169,6 +185,10 @@ static void describe_mark(uint32_t id, char *o, size_t size) {
         snprintf(o, size, "no record (a later mark took its slot)");
         return;
     }
+    describe_rec(m, o, size);
+}
+
+static void describe_rec(const VkPassMark *m, char *o, size_t size) {
     if (m->kind == VK_MARK_DISPATCH) {
         snprintf(o, size, "dispatch %u of submission %llu: %ux%ux%u groups%s, cs %016llx", m->step,
                  (unsigned long long)m->fence, m->w, m->h, m->d, m->w ? "" : " (indirect)", shader_id(m->first[0]));
@@ -265,4 +285,119 @@ void vk_pass_marks_report(void) {
         log_lines(t);
     }
     nv_report();
+}
+
+// ---- pass times (TOTK_PASS_TIMES=1, diagnostics)
+// A timestamp at the start (TOP_OF_PIPE) and at the end (BOTTOM_OF_PIPE) of every pass and dispatch, next to its pass
+// marks, into a query pool with a pair per mark slot. A full barrier precedes every pass and dispatch, so the pair
+// measures that pass alone. The replay thread reads finished pairs back every 64 marks (no wait: a submission whose
+// fence is done has its results), resets them on the host (hostQueryReset) and sums them by what the pass is: kind,
+// size, first fragment (or compute) shader. Every 2 s the log gets the 8 costliest kinds with their GPU ms per second,
+// which names the pass behind a view that costs the GPU far more than the rest of the game.
+enum { PT_KINDS = 512, PT_TOP = 8 };
+typedef struct { uint64_t key, ns, n, max_ns; VkPassMark rec; } PtKind;
+static PtKind pt_kind[PT_KINDS];
+static uint32_t pt_read = 1;                // the next mark to read back
+static uint64_t pt_mask, pt_since;
+static double pt_ns_per_tick;
+
+static void pass_times_init(VkCtx *c) {
+    if (pt_pool || !rt_knob("PASS_TIMES", "0")) return;
+    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+    vkGetPhysicalDeviceFeatures2(c->phys, &f2);
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, NULL);
+    VkQueueFamilyProperties qp[16];
+    if (nq > 16) nq = 16;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, qp);
+    uint32_t bits = c->gfx_family < nq ? qp[c->gfx_family].timestampValidBits : 0;
+    VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                .queryCount = 2 * VK_PASS_MARKS};
+    if (!f12.hostQueryReset || !bits || vkCreateQueryPool(c->device, &qi, NULL, &pt_pool) != VK_SUCCESS) {
+        rt_log("vk: TOTK_PASS_TIMES: no hostQueryReset or no timestamps on the queue; passes not timed");
+        pt_pool = VK_NULL_HANDLE;
+        return;
+    }
+    vkResetQueryPool(c->device, pt_pool, 0, 2 * VK_PASS_MARKS);
+    pt_mask = bits >= 64 ? ~0ull : (1ull << bits) - 1;
+    pt_ns_per_tick = c->props.limits.timestampPeriod;
+    pt_since = plat_now_ns();
+    rt_log("vk: TOTK_PASS_TIMES: every pass and dispatch timed on the GPU; the costliest kinds logged every 2 s");
+}
+
+static uint64_t pt_key(const VkPassMark *m) {
+    uint64_t k = (uint64_t)m->kind * 0x9e3779b97f4a7c15ull ^ ((uint64_t)m->w << 32 | m->h) * 0xff51afd7ed558ccdull;
+    const GfxShader *s = m->kind == VK_MARK_DISPATCH ? m->first[0] : m->first[1];
+    return (k ^ shader_id(s) ^ (uint64_t)m->ncolor << 56) | 1;
+}
+
+static void pt_add(const VkPassMark *m, uint64_t ns) {
+    uint64_t key = pt_key(m);
+    for (uint32_t i = (uint32_t)key & (PT_KINDS - 1), tries = 0; tries < PT_KINDS; i = (i + 1) & (PT_KINDS - 1), tries++) {
+        PtKind *k = &pt_kind[i];
+        if (k->key && k->key != key) continue;
+        if (!k->key) k->key = key, k->rec = *m;
+        k->ns += ns, k->n++;
+        if (ns > k->max_ns) k->max_ns = ns, k->rec = *m;
+        return;
+    }
+}
+
+static void pt_report(uint64_t now) {
+    double secs = (double)(now - pt_since) / 1e9, total = 0;
+    PtKind *top[PT_TOP] = {0};
+    for (int i = 0; i < PT_KINDS; i++) {
+        PtKind *k = &pt_kind[i];
+        if (!k->key) continue;
+        total += (double)k->ns;
+        for (int j = 0; j < PT_TOP; j++)
+            if (!top[j] || k->ns > top[j]->ns) {
+                memmove(&top[j + 1], &top[j], (PT_TOP - 1 - j) * sizeof *top);
+                top[j] = k;
+                break;
+            }
+    }
+    rt_log("vk: pass times over %.1f s: %.1f ms of GPU per second in passes and dispatches; the costliest kinds:", secs,
+           total / 1e6 / secs);
+    for (int j = 0; j < PT_TOP && top[j]; j++) {
+        char d[640];
+        describe_rec(&top[j]->rec, d, sizeof d);
+        rt_log("vk:   %5.1f ms/s, %llu times, avg %.2f ms, max %.2f ms: %s", (double)top[j]->ns / 1e6 / secs,
+               (unsigned long long)top[j]->n, (double)top[j]->ns / 1e6 / (double)top[j]->n,
+               (double)top[j]->max_ns / 1e6, d);
+    }
+    memset(pt_kind, 0, sizeof pt_kind);
+    pt_since = now;
+}
+
+static void pass_times_poll(void) {
+    VkCtx *c = vk_ctx();
+    uint64_t done = vk_sync_fence_done();
+    for (; seq - pt_read >= VK_PASS_MARKS - 64; pt_read++) {   // fell nearly a lap behind: drop the oldest
+        uint32_t slot = pt_read & (VK_PASS_MARKS - 1);
+        if (pt_read && pt_owner[slot] == pt_read) {
+            vkResetQueryPool(c->device, pt_pool, 2 * slot, 2);
+            __atomic_store_n(&pt_owner[slot], 0, __ATOMIC_RELEASE);
+        }
+    }
+    for (; pt_read != seq; pt_read++) {
+        if (!pt_read) continue;
+        uint32_t slot = pt_read & (VK_PASS_MARKS - 1);
+        const VkPassMark *m = &ring[slot];
+        if (pt_owner[slot] != pt_read) continue;   // untimed
+        if (m->id != pt_read || m->fence > done) break;
+        uint64_t t[2];
+        VkResult r = vkGetQueryPoolResults(c->device, pt_pool, 2 * slot, 2, sizeof t, t, sizeof t[0],
+                                           VK_QUERY_RESULT_64_BIT);
+        if (r == VK_NOT_READY) break;
+        if (r == VK_SUCCESS && (m->kind == VK_MARK_DISPATCH || m->draws != UINT32_MAX)) {
+            uint64_t s = t[0] & pt_mask, e = t[1] & pt_mask;
+            if (e >= s) pt_add(m, (uint64_t)((double)(e - s) * pt_ns_per_tick));
+        }
+        vkResetQueryPool(c->device, pt_pool, 2 * slot, 2);
+        __atomic_store_n(&pt_owner[slot], 0, __ATOMIC_RELEASE);
+    }
+    uint64_t now = plat_now_ns();
+    if (now - pt_since >= 2000000000ull) pt_report(now);
 }
