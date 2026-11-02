@@ -289,6 +289,25 @@ int probe_cfg(void) {
     CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
               input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
           "stick percent: an axis's end is 100%, the centre 0%, round in between");
+    {   // the native camera: the same distance is the same angle at any speed and frame rate; a flick's excess is carried
+        const MouseCamCfg cc = {1, 1, 2, 0.2f, 85};
+        MouseCamState cs = {{0, 0}};
+        int32_t o[2];
+        input_mouse_camera(&cs, 0, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] == 0 && o[1] == 0, "mouse camera: no motion is a neutral stick");
+        input_mouse_camera(&cs, 1, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] > 0.2 * 32767 && o[1] == 0, "mouse camera: one count is past the dead zone");
+        input_mouse_camera(&cs, 0, -10, 1.0 / 60, &cc, o);
+        CHECK(o[1] > 0, "mouse camera: moving up is stick up");
+        cs = (MouseCamState){{0, 0}};
+        input_mouse_camera(&cs, 2000, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] == 32767 && cs.carry[0] > 0 && cs.carry[0] <= 12.0, "mouse camera: a flick saturates and the rest is carried (12 degrees at most)");
+        input_mouse_camera(&cs, 0, 0, 1.0 / 60, &cc, o);
+        CHECK(o[0] > 0, "mouse camera: the carry keeps turning after the mouse stops");
+        const MouseCamCfg off = {0, 1, 2, 0.2f, 85};
+        input_mouse_camera(&cs, 50, 0, 1.0 / 60, &off, o);
+        CHECK(o[0] == 0 && cs.carry[0] == 0, "mouse camera: sensitivity 0 is off");
+    }
     // Gamepad layouts (input_map.c)
     CHECK(input_pad_layout_pick("auto", 1) == PAD_LAYOUT_NINTENDO && input_pad_layout_pick(NULL, 0) == PAD_LAYOUT_XBOX,
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");

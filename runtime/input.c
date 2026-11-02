@@ -286,14 +286,18 @@ static void walk_get(void) {
 // the camera speed factor the game runs with (camera_speed.c, cam_speed_applied), which multiplies every right-stick
 // turn rate, so TOTK_MOUSE_SENS alone sets the mouse's speed; below 1 the sample stays within the stick's range, so the
 // mouse's top speed drops with the factor.
+// TOTK_MOUSE_MODE native (default): the angle moved, through the inverse of the game's stick response
+// (input_mouse_camera); linear: the older speed-to-deflection mapping (input_mouse_stick).
 static void mouse_camera(int32_t out[2]) {
     static uint64_t frame = ~0ull, t0;
     static int32_t held[2];
+    static MouseCamState cam_state;
     uint64_t now = plat_now_ns();
     int32_t dx, dy;
     if (!ikb_captured()) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
+        cam_state.carry[0] = cam_state.carry[1] = 0;
         frame = ~0ull;
     } else {
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -301,7 +305,16 @@ static void mouse_camera(int32_t out[2]) {
         if (fr != frame) {
             double dt = age < 0.004 ? 0.004 : age > 0.1 ? 0.1 : age;
             ikb_mouse_take(&dx, &dy);
-            input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
+            const char *mode = cfg_value("TOTK_MOUSE_MODE");
+            if (mode && !strcmp(mode, "linear")) {
+                cam_state.carry[0] = cam_state.carry[1] = 0;
+                input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
+            } else {
+                MouseCamCfg cc = {mouse_sens_get(), (float)cfg_double("TOTK_MOUSE_Y_RATIO"),
+                                  (float)cfg_double("TOTK_MOUSE_CURVE"), (float)cfg_double("TOTK_MOUSE_DEADZONE"),
+                                  (float)cfg_double("TOTK_MOUSE_RATE")};
+                input_mouse_camera(&cam_state, dx, dy, dt, &cc, held);
+            }
             frame = fr;
             t0 = now;
         } else if (age > 0.1) {
