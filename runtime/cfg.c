@@ -283,13 +283,15 @@ static const struct { const char *key, *value; } DECK[] = {
     {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"},
 };
 // The Lenovo Legion Go S (1920x1200 16:10 at up to 120 Hz, Ryzen Z1 Extreme / Z2 Go, RDNA 3 / 2 sharing system memory):
-// the Deck's 1280x800 game resolution (the same 16:10 HUD overlay, romfs-patches-1280x800) shown fullscreen on the
-// 1920x1200 panel, which the present scales up with FSR (vk_fsr.c); fifo; 60 fps, which divides 120 Hz. At the
-// desktop's 1920x1080 the native build held ~41-44 fps on Great Sky Island, at the Deck's resolution ~50-55.
+// the panel's own 1920x1200 at full scene size (the 16:10 HUD overlay romfs-patches-1920x1200, make_romfs_patches.py
+// --aspect 1920x1200); fifo; 60 fps, which divides 120 Hz. Measured on Josh's save (6e4fc76): native 1920x1200 ran
+// p50 59.0 / p90 51.1 fps with the GPU at 11 ms, against 59.2 / 52.6 at the Deck's 1280x800 with a 1067x667 scene
+// scaled up by FSR 1: the frame is CPU-bound, so the native picture costs ~1.5 fps at p90 and is far crisper.
+// output_res = 1280x800 and render_scale = game in totk.ini bring back the Deck-size picture.
 // The replay on a thread of its own (vk_backend.c, one frame of latency): there the frame is CPU-bound on the render
 // thread (render busy 17.5-20 ms with the GPU at 10-11 ms), and 10-11.5 ms of that is the replay.
 static const struct { const char *key, *value; } GOS[] = {
-    {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1920x1200"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
+    {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1920x1200"}, {"OUTPUT_RES", "1920x1200"}, {"RENDER_SCALE", "100"},
     {"UPSCALER", "fsr"}, {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "60"}, {"REPLAY_ASYNC", "1"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck, 2 Legion Go S
