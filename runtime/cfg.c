@@ -298,6 +298,11 @@ static const struct { const char *key, *value; } GOS[] = {
     // at 11.1 ms with the same picture (Legolas, 2026-11-02). Keeping targets in the feedback layout across passes did
     // not help (3778 switches): they come from elsewhere in the replay.
     {"FEEDBACK", "restart"},
+    // The Vulkan calls on the recorder thread (vk_rec.c): with the replay on its own thread a third of its ~12 ms was
+    // inside RADV, which lengthened what the game's fence waits sat behind (6.9 ms a frame). With it: standing 53.4 ->
+    // 59.9 fps, replay 12.6 -> 10.5 ms, fence wait 6.9 -> 3.3 ms; Great Sky Island p50 60 / p90 57 / p99 50 against
+    // 54 / 51 / 48 (Legolas, 2026-11-02). Off on AMD elsewhere: neutral with the replay on the render thread.
+    {"VK_RECORDER", "1"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck, 2 Legion Go S
 
