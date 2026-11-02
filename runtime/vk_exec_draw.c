@@ -2351,6 +2351,20 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 
 // ---- dispatch and uniform buffer updates
 
+// Before a dispatch binds its resources: every image its image slots name leaves the feedback layout (storage images
+// are written in GENERAL); learned targets it only samples stay (vk_exec.c fbl_keep). Done before the descriptor
+// signature, which includes the feedback list.
+static void fbl_drop_storage(VkExec *ex) {
+    if (!ex->nfbl) return;
+    vk_texture_lock();
+    for (int slot = 0; slot < 32 && ex->nfbl; slot++) {
+        uint64_t h = ex->img[NVN_STAGE_CS][slot];
+        const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
+        if (img) vk_exec_fbl_drop(ex, img->image);
+    }
+    vk_texture_unlock();
+}
+
 static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     if (d->x <= 0 || d->y <= 0 || d->z <= 0) return;
     if (!ex->prog) return warn_once(W_PROGRAM, "a dispatch without a bound program is skipped");
@@ -2363,7 +2377,10 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
-    vk_exec_barrier(ex);   // ends the pass; earlier writes are visible to the shader
+    // ends the pass; earlier writes are visible to the shader. Learned targets may stay in the feedback layout, which
+    // its sampled descriptors take; its storage images leave it in bind_resources (vk_exec_fbl_drop).
+    vk_exec_barrier_for(ex, VK_NULL_HANDLE, VK_NULL_HANDLE);
+    fbl_drop_storage(ex);
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, p);
     c0_dim[0] = (uint32_t)d->x, c0_dim[1] = (uint32_t)d->y, c0_dim[2] = (uint32_t)d->z;
     twin_dispatch = 1;

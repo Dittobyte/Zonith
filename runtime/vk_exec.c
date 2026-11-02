@@ -558,22 +558,54 @@ void vk_exec_mem_barrier(VkExec *ex) {
     ex->barrier_at = ++ex->recorded;
 }
 
+// Pass to pass, learned targets the new pass does not attach stay in the feedback layout (TOTK_FBL_KEEP, default on):
+// on RADV a switch between GENERAL and ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT decompresses the whole image (DCC, HTILE),
+// and a view that alternates G-buffer passes with passes on other targets (Ukouh Shrine: ~430 passes a frame) paid
+// that for up to 8 images at the panel's size each time, ~20 ms of GPU a frame at 1920x1200 on the Legion Go S.
+// Sampling them meanwhile is fine: their descriptors take the feedback layout (vk_exec_draw.c in_fbl). Every other
+// barrier (copies, dispatches, the end of a submission) still sends them all back to GENERAL. TOTK_FBL_KEEP=0: the
+// old switch at every pass.
+static int fbl_keep(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("FBL_KEEP", "1") != 0;
+    return on;
+}
+
+static int attached(const VkExec *ex, VkImage img) {
+    for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
+        if (ex->color[i].image == img) return 1;
+    return ex->depth.image == img;
+}
+
 // Full barrier. The images in the feedback layout become want[] (pass begin) or none (every other barrier): the others
-// go back to GENERAL and the new ones leave it, in the same command.
-static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
+// go back to GENERAL and the new ones leave it, in the same command (but see fbl_keep).
+// drop[]: images that must leave the feedback layout whatever fbl_keep says (the ones a clear or copy uses);
+// keep: the others may stay in it (pass begins, and clears and copies through vk_exec_barrier_for).
+static void barrier_fbl(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant, const VkImage *drop,
+                        int ndrop, int keep) {
     vk_exec_pass_end(ex);
     vk_exec_draw_flush_updates(ex);   // deferred uniform copies, behind a barrier of their own; this one makes them visible
     VkImageMemoryBarrier2 ib[18];
     uint32_t n = 0;
-    for (int i = 0; i < ex->nfbl; i++)
-        if (!has_image(want, nwant, ex->fbl_img[i]))
-            ib[n++] = layout_barrier(ex->fbl_img[i], ex->fbl_aspect[i], VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
-                                     VK_IMAGE_LAYOUT_GENERAL);
+    VkImage img[9];
+    VkImageAspectFlags asp[9];
+    int nn = 0;
+    for (int i = 0; i < nwant; i++) img[nn] = want[i], asp[nn++] = wasp[i];
+    keep = keep && fbl_keep();
+    for (int i = 0; i < ex->nfbl; i++) {
+        if (has_image(want, nwant, ex->fbl_img[i])) continue;
+        if (keep && nn < 9 && !has_image(drop, ndrop, ex->fbl_img[i]) && !(want && attached(ex, ex->fbl_img[i]))) {
+            img[nn] = ex->fbl_img[i], asp[nn++] = ex->fbl_aspect[i];
+            continue;
+        }
+        ib[n++] = layout_barrier(ex->fbl_img[i], ex->fbl_aspect[i], VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+                                 VK_IMAGE_LAYOUT_GENERAL);
+    }
     for (int i = 0; i < nwant; i++)
         if (!has_image(ex->fbl_img, ex->nfbl, want[i]))
             ib[n++] = layout_barrier(want[i], wasp[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT);
-    for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
-    ex->nfbl = nwant;
+    for (int i = 0; i < nn; i++) ex->fbl_img[i] = img[i], ex->fbl_aspect[i] = asp[i];
+    ex->nfbl = nn;
     if (ex->barrier_at == ex->recorded && !n) return;
     vk_exec_frame.fb_layouts += n;
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1,
@@ -582,7 +614,34 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
     ex->barrier_at = ++ex->recorded;
 }
 
+static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
+    barrier_fbl(ex, want, wasp, nwant, NULL, 0, want != NULL);
+}
+
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
+
+// A storage image of a dispatch that is still in the feedback layout (vk_exec_barrier_for kept it) goes to GENERAL alone,
+// outside any pass, before the dispatch that binds it.
+void vk_exec_fbl_drop(VkExec *ex, VkImage img) {
+    for (int i = 0; i < ex->nfbl; i++) {
+        if (ex->fbl_img[i] != img) continue;
+        VkImageMemoryBarrier2 ib = layout_barrier(img, ex->fbl_aspect[i], VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT,
+                                                  VK_IMAGE_LAYOUT_GENERAL);
+        VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1,
+                               .pImageMemoryBarriers = &ib};
+        vkCmdPipelineBarrier2(ex->cb, &di);
+        ex->recorded++;
+        vk_exec_frame.fb_layouts++;
+        ex->fbl_img[i] = ex->fbl_img[ex->nfbl - 1], ex->fbl_aspect[i] = ex->fbl_aspect[ex->nfbl - 1];
+        ex->nfbl--;
+        return;
+    }
+}
+
+void vk_exec_barrier_for(VkExec *ex, VkImage a, VkImage b) {
+    VkImage drop[2] = {a, b};
+    barrier_fbl(ex, NULL, NULL, 0, drop, 2, 1);
+}
 
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;

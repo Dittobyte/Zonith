@@ -45,7 +45,7 @@ static const char *const known[] = {
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "MEM_RESERVE", "MENU_LANG", "MENU_TEST",
     "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_CURVE", "MOUSE_DEADZONE", "MOUSE_MODE", "MOUSE_RATE", "MOUSE_SENS", "MOUSE_Y_RATIO", "MOVIE_HOST", "MOVIE_PACE",
-    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PASS_TIMES", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC",
@@ -99,7 +99,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"PUSH_SKIP", "performance"}, {"SPLIT_DRAWS", "performance"}, {"SPLIT_US", "performance"}, {"VK_VALIDATION", "performance"},
     {"VK_DYN_VERTEX", "performance"}, {"VK_DYN_A2C", "performance"}, {"VK_SUBGROUP_PIN", "performance"}, {"VK_RECORDER", "performance"},
     {"AMD_PRESET", "performance"},
-    {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
+    {"TRACE", "diagnostics"}, {"FLIGHT", "diagnostics"}, {"PASS_CRUMBS", "diagnostics"}, {"PASS_TIMES", "diagnostics"}, {"FLIGHT_SPIKE_MS", "diagnostics"},
     {"WB_FENCE_LIMIT", "diagnostics"}, {"WB_EXACT", "diagnostics"}, {"WB_SNAPSHOT", "diagnostics"},
     {"WB_INVALIDATE", "diagnostics"},
 };
@@ -293,6 +293,10 @@ static const struct { const char *key, *value; } DECK[] = {
 static const struct { const char *key, *value; } GOS[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1920x1200"}, {"OUTPUT_RES", "1920x1200"}, {"RENDER_SCALE", "100"},
     {"UPSCALER", "fsr"}, {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "60"}, {"REPLAY_ASYNC", "1"},
+    // Feedback loops by pass restart, not the feedback layout: at Ukouh Shrine's doorway the layout mode made 3790
+    // layout switches a frame (RADV decompresses the image at each), 29.7 ms of GPU and 28 fps; restart held 60 fps
+    // at 11.1 ms with the same picture (Legolas, 2026-11-02). vk_exec.c fbl_keep cuts those switches in layout mode.
+    {"FEEDBACK", "restart"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck, 2 Legion Go S
 

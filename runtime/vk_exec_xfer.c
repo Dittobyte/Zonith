@@ -426,7 +426,7 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     if (!buffer_side(ex, &s, p->src, &size, &c, &m)) return;
     vk_mem_count(m.cls, to_image ? VK_MUSE_COPY_SRC : VK_MUSE_GPU_WRITE, size);
     vk_exec_pass_end(ex);
-    vk_exec_barrier(ex);
+    vk_exec_barrier_for(ex, s.img->image, VK_NULL_HANDLE);
     if (to_image) vkCmdCopyBufferToImage(ex->cb, m.buffer, s.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &c);
     else vkCmdCopyImageToBuffer(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, m.buffer, 1, &c);
     ex->recorded++;
@@ -451,7 +451,7 @@ static void copy_t2t(VkExec *ex, const p_copy_t2t *p) {
     }
     VkImageSubresourceLayers sl = sub_layers(&s), dl = sub_layers(&d);
     vk_exec_pass_end(ex);
-    vk_exec_barrier(ex);
+    vk_exec_barrier_for(ex, s.img->image, d.img->image);
     if (s.img->samples > 1 && d.img->samples == 1) {
         VkImageResolve rv = {sl, sub_offset(&s), dl, sub_offset(&d), sub_extent(&s)};
         vkCmdResolveImage(ex->cb, s.img->image, VK_IMAGE_LAYOUT_GENERAL, d.img->image, VK_IMAGE_LAYOUT_GENERAL, 1, &rv);
@@ -580,7 +580,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
         }
         memcpy(&cv, &p->c, sizeof cv);
         vk_exec_pass_end(ex);
-        vk_exec_barrier(ex);
+        vk_exec_barrier_for(ex, img->image, VK_NULL_HANDLE);
         vkCmdClearColorImage(ex->cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &cv, 1, &rng);
     } else {
         int both = (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) && (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT);
@@ -588,7 +588,7 @@ static void clear_tex(VkExec *ex, const p_clear_tex *p) {
         if (img->aspect & VK_IMAGE_ASPECT_DEPTH_BIT) dv.depth = p->c.f[0];
         if (img->aspect & VK_IMAGE_ASPECT_STENCIL_BIT) dv.stencil = both ? p->c.u[1] : p->c.u[0];
         vk_exec_pass_end(ex);
-        vk_exec_barrier(ex);
+        vk_exec_barrier_for(ex, img->image, VK_NULL_HANDLE);
         vkCmdClearDepthStencilImage(ex->cb, img->image, VK_IMAGE_LAYOUT_GENERAL, &dv, 1, &rng);
     }
     ex->recorded++;
