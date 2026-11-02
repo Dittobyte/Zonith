@@ -135,9 +135,14 @@ void rec_begin(VkCommandBuffer cb) {
         // (rec_end_cb) fixed the white scene on an RX 6700 XT, but not this: 0.2.8 turned the recorder on for every
         // GPU and the AMD reports came back the same day. TOTK_VK_RECORDER=1 turns it on for an A/B run.
         const char *set = cfg_get("TOTK_VK_RECORDER");
-        mode = rt_knob("VK_RECORDER", vk_caps.amd ? "0" : "1");
+        // Under Wine (Proton on a Steam Deck class Ryzen Z1, RADV) it stays on: stable in every run there, and it saves
+        // about 1.7 ms a frame (docs/proton.md). TOTK_VK_RECORDER (and amd_preset) still decide.
+        int wine = plat_is_wine();
+        mode = rt_knob("VK_RECORDER", vk_caps.amd && !wine ? "0" : "1");
         if (!mode && vk_caps.amd && !(set && *set))
             rt_log("vk_rec: no recorder thread on AMD GPUs (TOTK_VK_RECORDER=1 turns it on)");
+        else if (mode && vk_caps.amd && wine && !(set && *set))
+            rt_log("vk_rec: recorder thread on for an AMD GPU under Wine (TOTK_VK_RECORDER=0 turns it off)");
         if (mode) {
             plat_event_init(&wake_ev, 0, 0);
             rec_prio = plat_thread_priority_get();
