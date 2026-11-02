@@ -22,6 +22,10 @@
 #include "vk.h"
 #include "platform/platform.h"
 
+// 1 while the game shows a menu or the inventory (toggled by Start/Back or the keyboard menu keys, cleared by A/B):
+// the mouse then drives the cursor instead of the camera (be4aa46, naufalalamsyah453, which used it without defining it).
+volatile int32_t g_game_menu;
+
 enum { STICK_MAX = 32767, STICK_DIR = 16384, TRIGGER_ON = 16384, RESCAN_MS = 1000 };
 
 static PlatMutex lock = PLAT_MUTEX_INIT;
