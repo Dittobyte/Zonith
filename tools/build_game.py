@@ -96,7 +96,9 @@ SDL3_DLLS = [UCRT / 'SDL3.dll', UCRT / 'libiconv-2.dll', UCRT / 'libopus-0.dll']
 # Flags for generated code as LAS Recomp builds it (Makefile GENFLAGS, Windows), plus -march for the FP/SIMD lowering.
 # --cpu v2 replaces the level for CPUs without AVX2/FMA; runtime/fma.c then supplies the correctly rounded fma the
 # lowering needs (runtime/simd.h).
-GEN_FLAGS = ['-O1', '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
+# -O2 by default (Proton on a Ryzen Z1: 55% fewer game-thread page faults and the most render headroom of the builds
+# measured on 2026-10-30); TOTK_GEN_OPT in the environment replaces it, e.g. TOTK_GEN_OPT=-O1 for a faster clean build.
+GEN_FLAGS = [os.environ.get('TOTK_GEN_OPT', '-O2'), '-fno-strict-aliasing', '-Wno-return-type', '-Wno-unused-label', '-fvisibility=hidden',
              '-march=x86-64-v3']
 RT_FLAGS = ['-O2', '-g', '-Wall', '-fno-strict-aliasing', '-march=x86-64-v3']
 
