@@ -24,7 +24,6 @@ static void delay_set(Delay *d, unsigned n) { if (n > d->cap) rt_fatal("reverb d
 static void delay_init(Delay *d, unsigned khz, float ms) { d->cap = samples(khz, ms); d->data = calloc(d->cap + 1, sizeof(float)); if (!d->data) rt_fatal("reverb delay allocation"); delay_set(d, d->cap); }
 static float delay_update(Delay *d, float v) {
     d->data[d->write++] = v; float out = d->data[d->read++];
-    /* The ring is cap + 1 slots, as delay_set and delay_tap index it. */
     if (d->read > d->cap) d->read = 0;
     if (d->write > d->cap) d->write = 0;
     return out;
