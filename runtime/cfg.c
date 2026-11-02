@@ -295,7 +295,8 @@ static const struct { const char *key, *value; } GOS[] = {
     {"UPSCALER", "fsr"}, {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "60"}, {"REPLAY_ASYNC", "1"},
     // Feedback loops by pass restart, not the feedback layout: at Ukouh Shrine's doorway the layout mode made 3790
     // layout switches a frame (RADV decompresses the image at each), 29.7 ms of GPU and 28 fps; restart held 60 fps
-    // at 11.1 ms with the same picture (Legolas, 2026-11-02). vk_exec.c fbl_keep cuts those switches in layout mode.
+    // at 11.1 ms with the same picture (Legolas, 2026-11-02). Keeping targets in the feedback layout across passes did
+    // not help (3778 switches): they come from elsewhere in the replay.
     {"FEEDBACK", "restart"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck, 2 Legion Go S

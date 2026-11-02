@@ -134,11 +134,7 @@ void vk_exec_draw_new_cb(void);
 // The GPU copies of the UpdateUniformBuffers deferred to the pass end (vk_exec_draw.c op_update_ub), after a
 // barrier of their own; vk_exec.c calls it with the pass ended, before a full barrier, the split and the end.
 void vk_exec_draw_flush_updates(VkExec *ex);
-void vk_exec_mem_barrier(VkExec *ex);
-// A full barrier before a clear or copy of images a and b (VK_NULL_HANDLE: none): only they leave the feedback layout,
-// the other learned targets stay in it (vk_exec.c fbl_keep).
-void vk_exec_barrier_for(VkExec *ex, VkImage a, VkImage b);
-void vk_exec_fbl_drop(VkExec *ex, VkImage img);   // a dispatch's storage image out of the feedback layout   // a full memory barrier alone, no layout change (vk_exec.c)
+void vk_exec_mem_barrier(VkExec *ex);   // a full memory barrier alone, no layout change (vk_exec.c)
 // vk_exec_draw.c: the vertex and fragment shader of the last draw recorded into this command buffer (NULL: none yet).
 void vk_exec_draw_shaders(const GfxShader **vs, const GfxShader **fs);
 VkBuffer vk_exec_inline_buffer(VkDeviceSize size);

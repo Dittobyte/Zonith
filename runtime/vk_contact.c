@@ -120,7 +120,6 @@ void vk_contact_flush(VkExec *ex) {
     float lx = -u[44 * 4 + 0], ly = -u[44 * 4 + 1], lz = -u[44 * 4 + 2], ll = sqrtf(lx * lx + ly * ly + lz * lz);
     float px = u[7 * 4 + 0], py = u[8 * 4 + 1], zfar = u[14 * 4 + 1];
     if (!(ll > 1e-6f) || !(px > 0) || !(py > 0) || !(zfar > 1)) return;
-    vk_exec_barrier(ex);   // targets kept in the feedback layout (vk_exec.c fbl_keep) back to GENERAL, which the march uses
     VkImageView in = vk_exec_target_view(C.depth, VK_FORMAT_R32_SFLOAT, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
                                          0, 0, 1, 0);
     VkImageView out = vk_exec_target_view(C.scene, VK_FORMAT_B10G11R11_UFLOAT_PACK32, VK_IMAGE_VIEW_TYPE_2D,
