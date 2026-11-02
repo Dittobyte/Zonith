@@ -653,12 +653,17 @@ static uint32_t reg_max[RT_ADDRESS_LIMIT >> REG_SHIFT];
 // Every write-watch query of the generation table (gen_lock held exclusively): calls, bytes and time since the last
 // mirror summary, all consumers together; the queries that found written pages (they also flush TLBs) apart.
 static uint64_t ww_calls, ww_bytes, ww_ticks, ww_dirty_calls, ww_dirty_ticks, ww_pages;
+// The same per consumer (gen_lock), for the perf line: the caller sets ww_who before it queries.
+enum { WW_CHANGED, WW_SNAP, WW_SHADOW, WW_FREEZE, WW_CENSUS, WW_N };
+static int ww_who;
+static uint64_t ww_c_calls[WW_N], ww_c_bytes[WW_N], ww_c_ticks[WW_N];
 
 static uint64_t ww_query(uint64_t addr, uint64_t size) {
     uint64_t t0 = qpc();
     uint64_t n = mem_written_pages(addr, size, gen_pages, sizeof gen_pages / sizeof *gen_pages);
     uint64_t dt = qpc() - t0;
     ww_ticks += dt, ww_calls++, ww_bytes += size;
+    ww_c_calls[ww_who]++, ww_c_bytes[ww_who] += size, ww_c_ticks[ww_who] += dt;
     if (n && n != UINT64_MAX) ww_dirty_calls++, ww_dirty_ticks += dt, ww_pages += n;
     return n;
 }
@@ -685,11 +690,31 @@ static uint64_t n_frz_refused;                // gen_lock: candidates mem_freeze
 // frozen: on the Legion Go S (native, Great Sky Island) 587 queries / 1430 MiB / 3.86 ms a frame against 34 / 80 MiB /
 // 0.50 ms for fix16's mirror under Proton. 0: as before.
 static int freeze_shadow = 1;
+// TOTK_FREEZE_BACKOFF (default 1): a region found thawed within 8 x freeze_idle submissions of its freeze must stay
+// idle twice as long before the next one (up to 16x), so a region the game writes every second or so stops cycling
+// through freeze, write fault and thaw (1576 thaws walking on the Go S, each a fault and two mprotects). A region
+// that stayed frozen longer starts again at 1x. 0: every region waits freeze_idle, as before.
+static int freeze_backoff = 1;
+static uint32_t reg_frz_ep[RT_ADDRESS_LIMIT >> REG_SHIFT];   // gen_lock: ww_ep of its freeze while frozen, else 0
+static uint8_t reg_bo[RT_ADDRESS_LIMIT >> REG_SHIFT];        // gen_lock: backoff shift
+// TOTK_WW_ONCE (default 1): a 2 MiB region queried whole in this submission (by the texture checks' snapshots or a
+// shadow sync) is not queried again by a later shadow sync of the same submission: its stamps are in the generation
+// table, and a write made after the query keeps its write bit for the next submission's query, as with the snapshots.
+// 0: every shadow sync queries its pool's unfrozen regions itself.
+static int ww_once = 1;
+static uint32_t reg_q[RT_ADDRESS_LIMIT >> REG_SHIFT];        // gen_lock: ww_ep of its last whole-region query
 
 // gen_lock held exclusively: region j, just queried with a tracked answer, becomes a freeze candidate when nothing
-// wrote it for freeze_idle submissions and it was not tried in that time.
+// wrote it for freeze_idle submissions (times its backoff) and it was not tried in that time.
 static void freeze_consider(uint64_t j) {
-    if (!freeze_idle || ww_ep - reg_last[j] < (uint32_t)freeze_idle || ww_ep - reg_tried[j] < (uint32_t)freeze_idle)
+    if (reg_frz_ep[j]) {   // it was frozen, and a write or a thaw has opened it since
+        if (freeze_backoff && ww_ep - reg_frz_ep[j] < 8u * (uint32_t)freeze_idle) {
+            if (reg_bo[j] < 4) reg_bo[j]++;
+        } else reg_bo[j] = 0;
+        reg_frz_ep[j] = 0;
+    }
+    uint32_t idle = (uint32_t)freeze_idle << reg_bo[j];
+    if (!freeze_idle || ww_ep - reg_last[j] < idle || ww_ep - reg_tried[j] < (uint32_t)freeze_idle)
         return;
     reg_tried[j] = ww_ep;
     if (nfcand == cfcand) grow((void **)&fcand, &cfcand, sizeof *fcand);
@@ -735,6 +760,7 @@ int vk_mem_changed(uint64_t addr, uint64_t size, uint32_t since, uint32_t *now) 
     uint32_t g = ++gen_now;
     int tracked = 1, frozen = 1;
     for (uint64_t a = lo & ~((1ull << REG_SHIFT) - 1); a < hi && frozen; a += 1ull << REG_SHIFT) frozen = mem_frozen(a);
+    ww_who = WW_CHANGED;
     while (!frozen) {
         uint64_t n = ww_query(lo, hi - lo);
         if (n == UINT64_MAX) { tracked = 0; break; }
@@ -779,6 +805,7 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         uint64_t a = r << SNAP_SHIFT, b = (k + 1) << SNAP_SHIFT;
         int tracked = 1;
         if (!g) g = ++gen_now;
+        ww_who = WW_SNAP;
         for (;;) {
             uint64_t n = ww_query(a, b - a);
             if (n == UINT64_MAX) { tracked = 0; break; }
@@ -788,7 +815,7 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         calls++;
         for (uint64_t j = r; j <= k; j++) {
             snap_at[j] = epoch, snap_untracked[j] = (uint8_t)!tracked;
-            if (tracked) freeze_consider(j);
+            if (tracked) reg_q[j] = ww_ep, freeze_consider(j);
         }
         r = k + 1;
     }
@@ -1010,15 +1037,21 @@ static void shadow_sync_pool(PoolRec *r) {
     uint64_t lo = r->import_lo, hi = r->import_hi;
     uint32_t g = ++gen_now;
     int tracked = 1;
-    for (uint64_t a = lo; a < hi;) {   // one query per run of regions that are not frozen
+    ww_who = WW_SHADOW;
+#define SKIP_REG(x) (mem_frozen(x) || (ww_once && reg_q[(x) >> REG_SHIFT] == ww_ep))
+    for (uint64_t a = lo; a < hi;) {   // one query per run of regions neither frozen nor queried whole already
         uint64_t b = (a | ((1ull << REG_SHIFT) - 1)) + 1;
         if (b > hi) b = hi;
-        if (mem_frozen(a)) { a = b; continue; }
-        while (b < hi && !mem_frozen(b)) b = b + (1ull << REG_SHIFT) < hi ? b + (1ull << REG_SHIFT) : hi;
+        if (SKIP_REG(a)) { a = b; continue; }
+        while (b < hi && !SKIP_REG(b)) b = b + (1ull << REG_SHIFT) < hi ? b + (1ull << REG_SHIFT) : hi;
         s_queries++;
         if (!query_stamp(a, b, g)) tracked = 0;
-        else if (freeze_shadow)
-            for (uint64_t j = a >> REG_SHIFT; j <= (b - 1) >> REG_SHIFT; j++) freeze_consider(j);
+        else
+            for (uint64_t j = a >> REG_SHIFT; j <= (b - 1) >> REG_SHIFT; j++) {
+                uint64_t ra = j << REG_SHIFT;
+                if (ra >= a && ra + (1ull << REG_SHIFT) <= b) reg_q[j] = ww_ep;   // queried whole
+                if (freeze_shadow) freeze_consider(j);
+            }
         a = b;
     }
     uint32_t since = r->sgen;
@@ -1046,6 +1079,7 @@ static void shadow_sync_pool(PoolRec *r) {
     }
     if (run) shadow_copy(r, run, hi, 0);
 }
+#undef SKIP_REG
 
 void vk_mem_shadow_sync(void) {
     if (!shadow_on) return;
@@ -1138,6 +1172,7 @@ void vk_mem_dirty_submit(void) {
         for (; j < n && page_lo(dlist[j]) <= hi + DIRTY_GAP; j++)
             if (page_hi(dlist[j]) > hi) hi = page_hi(dlist[j]);
         queries++;
+        ww_who = WW_CENSUS;
         int ok = query_stamp(lo, hi, g);
         for (int k = i; k < j; k++) {
             dlist[k]->untracked = 0;
@@ -1306,6 +1341,10 @@ static void mirror_mode(int discrete) {
     if (freeze_idle < 0) freeze_idle = 0;
     const char *fs = cfg_get("TOTK_FREEZE_SHADOW");
     freeze_shadow = !fs || !*fs || strcmp(fs, "0");
+    const char *fb = cfg_get("TOTK_FREEZE_BACKOFF");
+    freeze_backoff = !fb || !*fb || strcmp(fb, "0");
+    const char *wo = cfg_get("TOTK_WW_ONCE");
+    ww_once = !wo || !*wo || strcmp(wo, "0");
     const char *sh = cfg_get("TOTK_SHADOW");
 #ifdef _WIN32
     shadow_on = sh && *sh ? strcmp(sh, "0") != 0 : plat_is_wine();
@@ -1583,6 +1622,8 @@ static void freeze_pass(void) {
         if (ww_ep - reg_last[j] < (uint32_t)freeze_idle || mem_frozen(a)) continue;
         done++;
         if (!mem_freeze(a)) { n_frz_refused++; continue; }
+        reg_frz_ep[j] = ww_ep;
+        ww_who = WW_FREEZE;
         query_stamp(a, a + (1ull << REG_SHIFT), ++gen_now);
     }
 }
@@ -1766,6 +1807,10 @@ static void mirror_log(uint64_t frame) {
     ww_pages = 0;
     uint64_t nr = n_frz_refused;
     ww_calls = ww_bytes = ww_ticks = ww_dirty_calls = ww_dirty_ticks = n_frz_refused = 0;
+    uint64_t cc[WW_N], cb[WW_N], ct[WW_N];
+    memcpy(cc, ww_c_calls, sizeof cc), memcpy(cb, ww_c_bytes, sizeof cb), memcpy(ct, ww_c_ticks, sizeof ct);
+    memset(ww_c_calls, 0, sizeof ww_c_calls), memset(ww_c_bytes, 0, sizeof ww_c_bytes);
+    memset(ww_c_ticks, 0, sizeof ww_c_ticks);
     plat_mutex_unlock(&gen_lock);
     double wf = frame > ww_last ? (double)(frame - ww_last) : 1.0;
     ww_last = frame;
@@ -1777,6 +1822,15 @@ static void mirror_log(uint64_t frame) {
                "or mapping change %llu, refused %llu",
                (unsigned long long)frame, wc / wf, wb / wf / 1048576.0, qpc_ms(wt) / wf, dc / wf, wp / wf, qpc_ms(dt) / wf,
                fz * 2.0, (unsigned long long)ff, (unsigned long long)ft, (unsigned long long)fo, (unsigned long long)nr);
+    if (rt_trace & RT_TRACE_PERF) {
+        static const char *const who[WW_N] = {"changed", "snap", "shadow", "freeze", "census"};
+        char line[400];
+        int k = 0;
+        for (int i = 0; i < WW_N && k < (int)sizeof line; i++)
+            k += snprintf(line + k, sizeof line - (size_t)k, "%s %s %.1f q / %.1f MiB / %.3f ms", i ? ";" : "", who[i],
+                          cc[i] / wf, cb[i] / wf / 1048576.0, qpc_ms(ct[i]) / wf);
+        rt_log("mem: write-watch per consumer, per frame:%s", line);
+    }
     if (!vk_mirror_on) return;
     plat_mutex_lock(&mirror_stat_lock);
     MirrorAcc a = macc;
