@@ -2220,6 +2220,12 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (ex->mark && vk_exec_frame.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
     }
     vk_dlaa_draw(ex);
+    if (perf_session_on) {   // TOTK_SESSION_LOG: the scene camera block (as vk_dlaa.c vk_dlaa_draw finds it) for perf.c
+        const p_bind_buf *cb = &ex->ubo[0][1];
+        if (cb->size == 0x940 && cb->addr && ex->depth.image && ex->depth.width >= 640 &&
+            ex->depth.format == VK_FORMAT_D32_SFLOAT)
+            __atomic_store_n(&perf_cam_addr, (uint64_t)cb->addr, __ATOMIC_RELAXED);
+    }
     record_fixed(ex);
     repeat_stats(ex, info);
     bind_resources(ex, info);

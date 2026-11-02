@@ -1,9 +1,11 @@
 // Frame timing (TOTK_TRACE=perf, the frame-time summary, the performance overlay's counts), the A/B switches (rt_ab,
 // rt_knob) and TOTK_ONE_PER_CORE. The sampling profiler (TOTK_PROFILE) is the OS's (prof_win.c); without one the weak
 // prof_sampler_* below do nothing.
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "cfg.h"
 #include "flight.h"
@@ -40,7 +42,101 @@ void perf_gpu_busy(uint64_t ns) { plat_add64(&gpu_busy_total, (int64_t)ns); }
 
 uint64_t perf_gpu_busy_total(void) { return (uint64_t)__atomic_load_n(&gpu_busy_total, __ATOMIC_RELAXED); }
 
+// ---- session log (TOTK_SESSION_LOG=1): for long unattended test sessions, logs/session.tsv gets one line per 60-frame
+// window (about a second) and one per frame of TOTK_SESSION_SPIKE_MS (default 25) or more, appended across launches,
+// so a day of play leaves one file. A window: wall clock, seconds since launch, world clock, fps, mean and worst frame,
+// GPU and replay time, the game's fence wait, what bound the frame, what the worst frame waited on, and the camera:
+// position and the direction it looks (from the scene camera block, vk_exec_draw.c perf_cam_addr). Implies
+// TOTK_TRACE=perf (the GPU timestamps). tools/bench/session_report.py turns the file into an overview.
+volatile uint64_t perf_cam_addr;
+int perf_session_on;
+static FILE *sess;
+static uint64_t sess_t0, sess_spike_ns;
+static uint64_t worst_ns[PERF_N];   // perf_present: the slowest frame's waits in this window
+
+static void session_open(void) {
+    perf_session_on = rt_knob("SESSION_LOG", "0") != 0;
+    if (!perf_session_on) return;
+    rt_trace |= RT_TRACE_PERF;
+    const char *e = cfg_get("TOTK_SESSION_SPIKE_MS");
+    sess_spike_ns = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 25) * 1000000ull;
+    sess_t0 = kern_now_ns();
+}
+
+// Opened at the first window, not in prof_start: main.c log_open (which picks the log folder) runs after prof_start.
+static int session_file(void) {
+    static int tried;
+    if (sess || tried) return sess != NULL;
+    tried = 1;
+    char path[PLAT_PATH_MAX * 3 + 32];
+    const char *lp = rt_log_path(), *cut = lp ? strrchr(lp, '/') : NULL, *bs = lp ? strrchr(lp, 0x5c) : NULL;
+    if (bs > cut) cut = bs;   // Windows paths
+    if (!cut) return rt_log("session: no log folder: TOTK_SESSION_LOG writes nothing"), 0;
+    snprintf(path, sizeof path, "%.*s/session.tsv", (int)(cut - lp), lp);
+    sess = fopen(path, "ab");
+    if (!sess) return rt_log("session: cannot open %s", path), 0;
+    struct tm t;
+    plat_local_time(&t);
+    fprintf(sess, "# launch %04d-%02d-%02d %02d:%02d:%02d port %s\n"
+                  "kind\ttime\tup_s\tworld_s\tframe\tfps\tavg_ms\tmax_ms\tgpu_ms\treplay_ms\tfence_ms\tbound\t"
+                  "worst_xlate\tworst_tex\tworst_pipe\tx\ty\tz\tyaw\tpitch\n",
+            t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec, rt_port_version);
+    fflush(sess);
+    rt_log("session: logging to %s every 60 frames, spikes from %llu ms", path,
+           (unsigned long long)(sess_spike_ns / 1000000));
+    return 1;
+}
+
+// The camera from the scene camera block: vec4 rows 0-2 are the view matrix [R | t] (world to view, row-major), so the
+// camera sits at -R^T t and looks down -z, along -(row 2). Yaw: degrees clockwise from -z; pitch: up positive.
+// "-" fields: no block seen yet, or rows that are not a rotation (a block of another layout).
+static void cam_fields(char *o, size_t n) {
+    const float *u = (const float *)(uintptr_t)__atomic_load_n(&perf_cam_addr, __ATOMIC_RELAXED);
+    snprintf(o, n, "-\t-\t-\t-\t-");
+    if (!u) return;
+    float r[3][4];
+    memcpy(r, u, sizeof r);
+    for (int i = 0; i < 3; i++) {
+        float l = r[i][0] * r[i][0] + r[i][1] * r[i][1] + r[i][2] * r[i][2];
+        if (!(fabsf(l - 1) < 0.02f)) return;
+    }
+    float p[3];
+    for (int j = 0; j < 3; j++) p[j] = -(r[0][j] * r[0][3] + r[1][j] * r[1][3] + r[2][j] * r[2][3]);
+    float fx = -r[2][0], fy = -r[2][1], fz = -r[2][2];
+    double yaw = atan2(fx, -fz) * 180 / M_PI, pitch = asin(fy < -1 ? -1 : fy > 1 ? 1 : fy) * 180 / M_PI;
+    if (yaw < 0) yaw += 360;
+    snprintf(o, n, "%.1f\t%.1f\t%.1f\t%.0f\t%.0f", p[0], p[1], p[2], yaw, pitch);
+}
+
+static void session_time(char *o, size_t n) {
+    struct tm t;
+    plat_local_time(&t);
+    snprintf(o, n, "%02d-%02d %02d:%02d:%02d", t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min, t.tm_sec);
+}
+
+static void session_spike(uint64_t frame, uint64_t d, const uint64_t *f) {
+    char cam[96], tm[24];
+    cam_fields(cam, sizeof cam);
+    session_time(tm, sizeof tm);
+    fprintf(sess, "spike\t%s\t%.0f\t%.1f\t%llu\t%.1f\t%.1f\t%.1f\t-\t-\t-\t-\t%.1f\t%.1f\t%.1f\t%s\n", tm,
+            (kern_now_ns() - sess_t0) / 1e9, frame_step_world_us() / 1e6, (unsigned long long)frame, 1e9 / (double)d,
+            d / 1e6, d / 1e6, f[PERF_XLATE] / 1e6, f[PERF_TEX] / 1e6, f[PERF_PIPE] / 1e6, cam);
+}
+
+static void session_window(uint64_t frame, double fps, double avg_ms, double max_ms, double gpu_ms, double replay_ms,
+                           double fence_ms, const char *bound) {
+    char cam[96], tm[24];
+    cam_fields(cam, sizeof cam);
+    session_time(tm, sizeof tm);
+    fprintf(sess, "win\t%s\t%.0f\t%.1f\t%llu\t%.1f\t%.2f\t%.1f\t%.2f\t%.2f\t%.2f\t%s\t%.1f\t%.1f\t%.1f\t%s\n", tm,
+            (kern_now_ns() - sess_t0) / 1e9, frame_step_world_us() / 1e6, (unsigned long long)frame, fps, avg_ms, max_ms,
+            gpu_ms, replay_ms, fence_ms, bound, worst_ns[PERF_XLATE] / 1e6, worst_ns[PERF_TEX] / 1e6,
+            worst_ns[PERF_PIPE] / 1e6, cam);
+    fflush(sess);
+}
+
 void prof_start(void) {
+    session_open();
     flight_init();
     atexit(perf_summary_flush);   // boot.c's _exit path goes through prof_write instead
     perf_base = (rt_trace & RT_TRACE_PERF) || flight_on;
@@ -55,7 +151,7 @@ void prof_write(void) {
 
 // ---- TOTK_TRACE=perf: frame interval and the time the render thread spends waiting, logged every 60 presents. The
 // flight recorder (TOTK_FLIGHT=1, flight.c) takes the same numbers per frame.
-static uint64_t wait_ns[PERF_N], frame_ns[PERF_N], worst_ns[PERF_N];   // window totals, this frame, the slowest frame
+static uint64_t wait_ns[PERF_N], frame_ns[PERF_N];   // window totals, this frame, the slowest frame
 
 uint64_t perf_begin(void) { return kern_now_ns(); }
 
@@ -190,7 +286,8 @@ static uint64_t ft_frame(uint64_t frame, uint64_t now, uint64_t d) {
 // With calibrated timestamps a third line splits the GPU's idle time between timed parts: the part was submitted only
 // after the previous one had ended (the GPU waited for the CPU's replay or the game), or it was already queued (untimed
 // work such as uploads and presents ran there, or a wait held it).
-static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share, uint64_t n) {
+static const char *perf_gpu_line(uint64_t frame, double interval_ms, double pace_share, uint64_t n, double *gpu_out,
+                                  double *fence_out) {
     PerfGpu g;
     memset(&g, 0, sizeof g);
     if (perf_gpu_stats) perf_gpu_stats(&g);
@@ -209,6 +306,7 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
     const char *bound = pace_share >= 0.15 ? "pace"
                       : g.have_gpu ? (gpu_ms >= 0.8 * interval_ms ? "gpu" : "cpu")
                       : (rw + ow >= 0.5 * interval_ms ? "gpu" : "cpu");
+    *gpu_out = gpu_ms, *fence_out = ow;
     rt_log("perf: frame %llu: %s; fence wait per frame: render thread %.2f ms, other threads %.2f ms; %s; ram working set "
            "%.0f MiB, private %.0f MiB; bound: %s",
            (unsigned long long)frame, gs, rw, ow, vs, ws, priv, bound);
@@ -217,6 +315,7 @@ static void perf_gpu_line(uint64_t frame, double interval_ms, double pace_share,
                "%.2f ms with it queued (untimed work or waits); %.1f gaps over 0.5 ms, longest %.2f ms; submit to start avg %.2f ms",
                (unsigned long long)frame, g.idle_ns / 1e6 / n, g.starved_ns / 1e6 / n, (g.idle_ns - g.starved_ns) / 1e6 / n,
                (double)g.idle_gaps / n, g.max_gap_ns / 1e6, g.gpu_parts ? g.queued_ns / 1e6 / g.gpu_parts : 0.0);
+    return bound;
 }
 
 int rt_ab(void) {
@@ -289,6 +388,7 @@ void perf_present(uint64_t frame) {
         sum += d;
         n++;
         if (d > max) max = d, memcpy(worst_ns, frame_ns, sizeof worst_ns);
+        if (perf_session_on && d >= sess_spike_ns && session_file()) session_spike(frame, d, frame_ns);
         if (d >= slow_ns)
             rt_log("perf: slow frame %llu: %.1f ms; blocked pipeline %.1f xlate %.1f texture %.1f astc %.1f fence %.1f pacing %.1f",
                    (unsigned long long)frame, d / 1e6, frame_ns[PERF_PIPE] / 1e6, frame_ns[PERF_XLATE] / 1e6,
@@ -311,6 +411,7 @@ void perf_present(uint64_t frame) {
     int64_t oneshot = win[PERF_CNT_ONESHOT_WAIT];
     uint64_t shader_keys, shader_xlated;
     gfx_shader_counts(&shader_keys, &shader_xlated);
+    double replay_ms = n ? plat_xchg64(&replay_ns, 0) / 1e6 / n : 0;
     if (n && span)
         rt_log("perf: frame %llu: interval avg %.2f ms max %.2f ms (%.1f fps); render thread blocked: pacing %.0f%% fence %.0f%% drain %.0f%% pipeline build %.0f%% shader xlate %.0f%% texture %.0f%% (astc %.0f%%); pipelines built in background %lld, draws skipped pending %lld, waited %lld, waiting for a shader %lld, one-shot waited %lld; textures uploaded %lld re-uploaded %lld; slowest frame: xlate %.1f ms texture %.1f ms (astc %.1f) pipeline %.1f ms fence %.1f ms; shaders: %llu keys, %llu translated; render busy avg %.2f ms; replay avg %.2f ms; ab %llu/%llu; world %.1f s",
                (unsigned long long)frame, sum / 1e6 / n, max / 1e6, n * 1e9 / sum, 100.0 * wait_ns[PERF_PACE] / span,
@@ -321,8 +422,12 @@ void perf_present(uint64_t frame) {
                worst_ns[PERF_ASTC] / 1e6, worst_ns[PERF_PIPE] / 1e6, worst_ns[PERF_FENCE] / 1e6,
                (unsigned long long)shader_keys, (unsigned long long)shader_xlated,
                (span > wait_ns[PERF_PACE] ? span - wait_ns[PERF_PACE] : 0) / 1e6 / n,
-               plat_xchg64(&replay_ns, 0) / 1e6 / n, (unsigned long long)ab_b, (unsigned long long)n, frame_step_world_us() / 1e6);
-    if (n && span) perf_gpu_line(frame, sum / 1e6 / n, (double)wait_ns[PERF_PACE] / span, n);
+               replay_ms, (unsigned long long)ab_b, (unsigned long long)n, frame_step_world_us() / 1e6);
+    if (n && span) {
+        double gpu_ms = 0, fence_ms = 0;
+        const char *bound = perf_gpu_line(frame, sum / 1e6 / n, (double)wait_ns[PERF_PACE] / span, n, &gpu_ms, &fence_ms);
+        if (perf_session_on && session_file()) session_window(frame, n * 1e9 / sum, sum / 1e6 / n, max / 1e6, gpu_ms, replay_ms, fence_ms, bound);
+    }
     sum = max = n = ab_b = 0;
     memset(wait_ns, 0, sizeof wait_ns);
     win_start = now;

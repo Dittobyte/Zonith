@@ -49,6 +49,8 @@ enum { PERF_CNT_PIPE_ASYNC, PERF_CNT_PIPE_SKIP, PERF_CNT_TEX_UP, PERF_CNT_TEX_RE
 void perf_count(int kind);
 void perf_present(uint64_t frame);
 void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit); the 60 s lines come from perf_present
+extern int perf_session_on;                     // TOTK_SESSION_LOG=1 (perf.c): logs/session.tsv, one line a second
+extern volatile uint64_t perf_cam_addr;        // host address of the scene camera block, set by the replay for it
 void gfx_exit_log(void);                        // back end's lines for the exit summary (weak no-op in prof_win.c)
 void gfx_crash_log(void);                       // back end's lines for a crash report (weak no-op in main.c)
 void perf_gpu_wait(uint64_t t0);                // a wait for a GPU fence ended (any thread; the render thread's also counts as PERF_FENCE)

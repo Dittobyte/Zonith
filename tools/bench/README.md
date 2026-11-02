@@ -53,3 +53,11 @@ exit:             66.3 fps mean, 32.3 fps 1% low over 3370 frames in 50.8 s; ove
 `logs/totk.log` holds timings only, no keys and no game files, so it can be attached to an issue. Attach the log of the
 run itself and say which settings differ from the defaults; the numbers above are what a maintainer needs to reproduce
 a performance report.
+
+## Long sessions
+
+`TOTK_SESSION_LOG=1` (or `session_log = 1` in `totk.ini`) appends one line per 60 frames and one per frame of 25 ms or
+more (`TOTK_SESSION_SPIKE_MS`) to `logs/session.tsv`: fps, frame and GPU times, what bound the frame, and where the
+camera was and which way it looked. The file is never rotated, so a day of play across launches stays in one file.
+`python tools/bench/session_report.py logs/session.tsv` prints percentiles per launch, the worst windows with their
+position and heading (N = -z, E = +x) and the slowest map areas (`--cell` metres, default 250).
