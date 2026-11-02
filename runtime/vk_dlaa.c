@@ -217,7 +217,9 @@ void vk_dlaa_init(void) {
 #endif
 }
 
-int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+static int engine_fsr(void);
+// DLSS or, without NGX, FSR 3.1 can run: the scene's textures take the upscaler's mip bias (vk_texture.c).
+int vk_dlaa_available(void) { return vk_dlaa_wanted() && (N.available || engine_fsr()); }
 
 // ---------------------------------------------------------------- where DLAA runs in TotK's frame
 // Measured (TOTK_DUMP, frame 2100 at Lookout Landing, 2560x1440 scene): the G-buffer passes draw into five targets with

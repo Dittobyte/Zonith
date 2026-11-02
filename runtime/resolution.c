@@ -37,6 +37,7 @@
 #include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "vk_fsr3.h"
 
 #define BASE_W 1920
 #define BASE_H 1080
@@ -68,7 +69,9 @@ static int dlss_dll(void) {
     snprintf(path, sizeof path, "%.*s/nvngx_dlss.dll", (int)(last - exe), exe);
     return plat_file_exists(path);
 #else
-    return 0;
+    // No NGX off Windows: FSR 3.1 (vk_fsr3.c, built when the deps have its libraries) is the upscaler at the DLSS
+    // point, so the DLSS modes size its scene. TOTK_FSR3_UPSCALE=0 keeps the scene at render_scale as before.
+    return fsr3_available() && rt_knob("FSR3_UPSCALE", "1") != 0;
 #endif
 }
 
@@ -99,7 +102,7 @@ static void decide(void) {
 #ifdef _WIN32
         rt_log("resolution: DLSS %s needs nvngx_dlss.dll next to totk.exe, which is missing: the scene follows render_scale", m);
 #else
-        rt_log("resolution: DLSS %s runs on Windows only: the scene follows render_scale", m);
+        rt_log("resolution: DLSS %s needs FSR 3.1 off Windows, which this build lacks or TOTK_FSR3_UPSCALE=0 turned off: the scene follows render_scale", m);
 #endif
         R.dlss_k = 0;
     }

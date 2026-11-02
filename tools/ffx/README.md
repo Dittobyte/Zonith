@@ -45,3 +45,8 @@ Into `<deps>`: `build-ffx/libffx_vulkan_fsr3_vk_backend_3_1_5.a`, `build-ffx/lib
 `libffx_vulkan_fsr3_blobs.a` to `lib/`, `fsr-vulkan/include/ffx_vk_fsr3_3_1_5_bridge.h` to `include/`. About 0.5 MB
 together, shaders included. The FSR 4 "v07" provider in the same repository (an INT8 port of unreleased AMD sources that
 needs an externally supplied model) is not built.
+
+**Native Linux:** `tools/ffx/build_linux.sh <deps>` builds the same commit with the host clang (libstdc++) into
+`<deps>/lib` and `<deps>/include`; `build_game.py --deps <deps>` links them like the Windows build. Off Windows there is
+no NGX, so FSR 3.1 is the engine at the DLAA point, and the `dlss` modes (quality, balanced, performance) size its scene;
+`TOTK_FSR3_UPSCALE=0` keeps the scene at `render_scale` instead.

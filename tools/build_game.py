@@ -350,8 +350,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
     rt_inc = f'{inc} -I {cmd_path(out)} -I {vma} -I {imgui}'   # romfs_config.h, vk_mem_alloc.h (+ deps headers), imgui.h
     libs = [f'-L {cmd_path(DEPS / "lib")}'] + (LLVM_LINK_LIBS if WIN else LINK_LIBS) if DEPS else LINK_LIBS
-    if DEPS and WIN and all((DEPS / 'lib' / f).is_file() for f in FFX_LIBS):
-        libs = libs[:-4] + [f'-l:{f}' for f in FFX_LIBS] + libs[-4:]   # before the C++ runtime they need
+    if DEPS and all((DEPS / 'lib' / f).is_file() for f in FFX_LIBS):
+        # before the C++ runtime they need (Windows: libc++ and the rest; Linux: libstdc++, tools/ffx/build_linux.sh)
+        at = next(i for i, l in enumerate(libs) if 'libc++' in l or 'libstdc++' in l)
+        libs = libs[:at] + [f'-l:{f}' for f in FFX_LIBS] + libs[at:]
     # A compiler cache (sccache) may front clang: every lift rewrites the generated chunks with the same contents, so
     # the cached objects save the compile step on the next build.
     cache = f'{cmd_arg(os.environ["SCCACHE"])} ' if os.environ.get('SCCACHE') else ''
