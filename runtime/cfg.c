@@ -39,7 +39,7 @@ static const char *const known[] = {
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
     "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLSS", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
-    "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FREEZE_IDLE", "FREE_CORES",
+    "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FREEZE_IDLE", "FREEZE_SHADOW", "FREE_CORES",
     "FSR3_FAR", "FSR3_FOV", "FSR3_HDR", "FSR3_NEAR",
     "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
@@ -127,7 +127,7 @@ static const CfgMeta metas[] = {
     // HDR output (vk_hdr.c): on at start (the tonemap shader is swapped as shaders load); the nits apply at once
     {"HDR", "0", "0|1", RESTART}, {"HDR_PEAK_NITS", "1000", "400..10000", LIVE}, {"HDR_GAME_NITS", "203", "80..500", LIVE},
     {"HDR_UI_NITS", "203", "80..500", LIVE},
-    {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
+    {"DEVICE_PROFILE", "auto", "auto|desktop|deck|gos", RESTART},
     {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
     {"SHADOW_SCALE", "1", "1..4", RESTART},
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
@@ -270,7 +270,7 @@ int cfg_load(const char *path) {
 
 // ---- device profiles: defaults for a known machine, below the environment and totk.ini and above the table, so any
 // key the player sets wins and resetting a key in the menu returns to the profile's value. TOTK_DEVICE_PROFILE = auto
-// (default: the Steam Deck when the firmware says so), desktop (none) or deck.
+// (default: the Legion Go S or the Steam Deck when the firmware says so), desktop (none), deck or gos.
 //
 // The Steam Deck (LCD Jupiter, OLED Galileo; 1280x800, 16:10, 4 Zen 2 cores, RDNA 2 with 8 CUs sharing 16 GB): the game
 // at the screen's 1280x800 with its own 5/6 scene (the aspect patch gives the camera its 16:10, resolution.c, and the
@@ -281,7 +281,15 @@ static const struct { const char *key, *value; } DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
     {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"},
 };
-static int profile = -1;   // 0 none, 1 Steam Deck
+// The Lenovo Legion Go S (1920x1200 16:10 at up to 120 Hz, Ryzen Z1 Extreme / Z2 Go, RDNA 3 / 2 sharing system memory):
+// the Deck's 1280x800 game resolution (the same 16:10 HUD overlay, romfs-patches-1280x800) shown fullscreen on the
+// 1920x1200 panel, which the present scales up with FSR (vk_fsr.c); fifo; 60 fps, which divides 120 Hz. At the
+// desktop's 1920x1080 the native build held ~41-44 fps on Great Sky Island, at the Deck's resolution ~50-55.
+static const struct { const char *key, *value; } GOS[] = {
+    {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1920x1200"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
+    {"UPSCALER", "fsr"}, {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "60"},
+};
+static int profile = -1;   // 0 none, 1 Steam Deck, 2 Legion Go S
 
 static int read_line(const char *path, char *out, size_t n) {
     FILE *f = fopen(path, "r");
@@ -302,6 +310,14 @@ static int on_steam_deck(void) {
            (!strcmp(product, "Jupiter") || !strcmp(product, "Galileo"));
 }
 
+// The Legion Go S: board vendor LENOVO, product version (or family) "Legion Go S ..." in /sys/class/dmi/id.
+static int on_legion_go_s(void) {
+    char vendor[64], name[128];
+    if (!read_line("/sys/class/dmi/id/sys_vendor", vendor, sizeof vendor) || strcasecmp(vendor, "LENOVO")) return 0;
+    return (read_line("/sys/class/dmi/id/product_version", name, sizeof name) && !strncmp(name, "Legion Go S", 11)) ||
+           (read_line("/sys/class/dmi/id/product_family", name, sizeof name) && !strncmp(name, "Legion Go S", 11));
+}
+
 static const char *raw_get(const char *name);
 
 static int profile_of(void) {
@@ -309,13 +325,17 @@ static int profile_of(void) {
     if (p >= 0) return p;
     const char *set = raw_get(PREFIX "DEVICE_PROFILE");
     if (set && !strcmp(set, "deck")) p = 1;
+    else if (set && !strcmp(set, "gos")) p = 2;
     else if (set && *set && strcmp(set, "auto")) p = 0;
-    else p = on_steam_deck();
+    else p = on_legion_go_s() ? 2 : on_steam_deck();   // Steam sets SteamDeck=1 on a Go S too: the Go S first
     __atomic_store_n(&profile, p, __ATOMIC_RELEASE);
     return p;
 }
 
-const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
+const char *cfg_device_profile(void) {
+    int p = profile_of();
+    return p == 2 ? "gos" : p ? "deck" : "desktop";
+}
 
 static const char *raw_get(const char *name) {
     const char *e = getenv(name);
@@ -348,7 +368,13 @@ const char *cfg_get(const char *name) {
     const char *v = raw_get(name);
     if (v || strncmp(name, PREFIX, PREFIX_LEN)) return v;
     if ((v = preset_get(name))) return v;
-    if (!profile_of()) return NULL;
+    int p = profile_of();
+    if (p == 2) {
+        for (size_t i = 0; i < sizeof GOS / sizeof *GOS; i++)
+            if (!strcasecmp(GOS[i].key, name + PREFIX_LEN)) return GOS[i].value;
+        return NULL;
+    }
+    if (!p) return NULL;
     for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
         if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
     return NULL;
@@ -727,7 +753,10 @@ static void load_ini(void) {
 
 void cfg_init(void) {
     load_ini();
-    if (profile_of())
+    if (profile_of() == 2)
+        rt_log("cfg: device profile Legion Go S: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
+               "turns it off, =deck picks the Steam Deck's)");
+    else if (profile_of())
         rt_log("cfg: device profile Steam Deck: defaults for the keys totk.ini does not set (TOTK_DEVICE_PROFILE=desktop "
                "turns it off)");
 }

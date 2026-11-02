@@ -679,6 +679,22 @@ static uint32_t reg_tried[RT_ADDRESS_LIMIT >> REG_SHIFT];   // gen_lock: ww_ep o
 static uint32_t *fcand;                       // gen_lock: regions to try at the next freeze pass
 static int nfcand, cfcand;
 static uint64_t n_frz_refused;                // gen_lock: candidates mem_freeze refused
+// TOTK_FREEZE_SHADOW (default 1): the shadow syncs' queries (vk_mem_shadow_sync) also put idle regions up for freezing,
+// as the mirror's per-submission snapshots did under Wine (fix8, wine-dirty-tracking 3a4f4fa). Without it only the
+// texture checks' snapshots nominate regions, so the shadow pools' regions were queried every submission and seldom
+// frozen: on the Legion Go S (native, Great Sky Island) 587 queries / 1430 MiB / 3.86 ms a frame against 34 / 80 MiB /
+// 0.50 ms for fix16's mirror under Proton. 0: as before.
+static int freeze_shadow = 1;
+
+// gen_lock held exclusively: region j, just queried with a tracked answer, becomes a freeze candidate when nothing
+// wrote it for freeze_idle submissions and it was not tried in that time.
+static void freeze_consider(uint64_t j) {
+    if (!freeze_idle || ww_ep - reg_last[j] < (uint32_t)freeze_idle || ww_ep - reg_tried[j] < (uint32_t)freeze_idle)
+        return;
+    reg_tried[j] = ww_ep;
+    if (nfcand == cfcand) grow((void **)&fcand, &cfcand, sizeof *fcand);
+    fcand[nfcand++] = (uint32_t)j;
+}
 
 static uint32_t *gen_slot(uint64_t page_addr, int create) {
     uint64_t ci = page_addr >> GEN_CHUNK_SHIFT;
@@ -772,12 +788,7 @@ static uint64_t snap_regions(uint64_t r0, uint64_t r1, uint32_t epoch) {
         calls++;
         for (uint64_t j = r; j <= k; j++) {
             snap_at[j] = epoch, snap_untracked[j] = (uint8_t)!tracked;
-            if (tracked && freeze_idle && ww_ep - reg_last[j] >= (uint32_t)freeze_idle &&
-                ww_ep - reg_tried[j] >= (uint32_t)freeze_idle) {
-                reg_tried[j] = ww_ep;
-                if (nfcand == cfcand) grow((void **)&fcand, &cfcand, sizeof *fcand);
-                fcand[nfcand++] = (uint32_t)j;
-            }
+            if (tracked) freeze_consider(j);
         }
         r = k + 1;
     }
@@ -1006,6 +1017,8 @@ static void shadow_sync_pool(PoolRec *r) {
         while (b < hi && !mem_frozen(b)) b = b + (1ull << REG_SHIFT) < hi ? b + (1ull << REG_SHIFT) : hi;
         s_queries++;
         if (!query_stamp(a, b, g)) tracked = 0;
+        else if (freeze_shadow)
+            for (uint64_t j = a >> REG_SHIFT; j <= (b - 1) >> REG_SHIFT; j++) freeze_consider(j);
         a = b;
     }
     uint32_t since = r->sgen;
@@ -1291,6 +1304,8 @@ static void mirror_mode(int discrete) {
     const char *fi = cfg_get("TOTK_FREEZE_IDLE");
     freeze_idle = fi && *fi ? atoi(fi) : 60;
     if (freeze_idle < 0) freeze_idle = 0;
+    const char *fs = cfg_get("TOTK_FREEZE_SHADOW");
+    freeze_shadow = !fs || !*fs || strcmp(fs, "0");
     const char *sh = cfg_get("TOTK_SHADOW");
 #ifdef _WIN32
     shadow_on = sh && *sh ? strcmp(sh, "0") != 0 : plat_is_wine();
