@@ -493,6 +493,7 @@ static void flag_names(uint32_t f, char *buf, size_t n) {
 // class since the previous census (the first one: since frame 1200). Logged at frame 1800 (in the world from the
 // run-game saves), at frame 600, and with TOTK_TRACE=perf every 1800 frames.
 static void dirty_frame(uint64_t frame);
+static int dirty_census_on(void);
 
 static void mirror_log(uint64_t frame);
 static void shadow_log(uint64_t frame);
@@ -562,7 +563,7 @@ void vk_mem_census(uint64_t frame) {
         rt_log("mem: frame %llu: %s", (unsigned long long)frame, s);
     }
     if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
-    if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
+    if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on && dirty_census_on()) dirty_frame(frame);
     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
         mirror_log(frame), shadow_log(frame);   // mirror_log also logs the write-watch line
     if (frame == 1200) {   // loading is over: the first window starts here
@@ -1146,8 +1147,20 @@ static void shadow_log(uint64_t frame) {
     plat_mutex_unlock(&shadow_lock);
 }
 
+// TOTK_DIRTY_CENSUS=1 turns the census on with TOTK_TRACE=perf. Off by default: it is statistics only, and its one
+// query per run of buffer-bound pools at every submit cost 3.3 of the 3.9 ms of write watch a frame in perf runs on
+// the Legion Go S, which untraced play never paid, so perf runs measured a slower game than the one played.
+static int dirty_census_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("TOTK_DIRTY_CENSUS");
+        on = e && *e && strcmp(e, "0") != 0;
+    }
+    return on;
+}
+
 void vk_mem_dirty_submit(void) {
-    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on) return;   // the mirror's own line replaces the census
+    if (!(rt_trace & RT_TRACE_PERF) || vk_mirror_on || !dirty_census_on()) return;   // the mirror's own line replaces it
     uint64_t t0 = kern_now_ns();
     uint32_t prev = dirty_sub;   // the submit whose replay noted the bindings
     dirty_sub = prev + 1 ? prev + 1 : 1;

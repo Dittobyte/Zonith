@@ -37,7 +37,7 @@ static const char *const known[] = {
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-    "DESC_TEMPLATE", "DEVICE_PROFILE", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLSS", "DUMP", "DUMP_BUF", "DUMP_DIR",
+    "DESC_TEMPLATE", "DEVICE_PROFILE", "DIRTY_CENSUS", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLSS", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FREEZE_BACKOFF", "FREEZE_IDLE", "FREEZE_SHADOW", "FREE_CORES",
     "FSR3_FAR", "FSR3_FOV", "FSR3_HDR", "FSR3_NEAR",
@@ -285,9 +285,11 @@ static const struct { const char *key, *value; } DECK[] = {
 // the Deck's 1280x800 game resolution (the same 16:10 HUD overlay, romfs-patches-1280x800) shown fullscreen on the
 // 1920x1200 panel, which the present scales up with FSR (vk_fsr.c); fifo; 60 fps, which divides 120 Hz. At the
 // desktop's 1920x1080 the native build held ~41-44 fps on Great Sky Island, at the Deck's resolution ~50-55.
+// The replay on a thread of its own (vk_backend.c, one frame of latency): there the frame is CPU-bound on the render
+// thread (render busy 17.5-20 ms with the GPU at 10-11 ms), and 10-11.5 ms of that is the replay.
 static const struct { const char *key, *value; } GOS[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1920x1200"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
-    {"UPSCALER", "fsr"}, {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "60"},
+    {"UPSCALER", "fsr"}, {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "60"}, {"REPLAY_ASYNC", "1"},
 };
 static int profile = -1;   // 0 none, 1 Steam Deck, 2 Legion Go S
 
