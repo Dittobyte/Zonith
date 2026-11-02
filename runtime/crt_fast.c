@@ -1,6 +1,8 @@
 // memcmp for the whole exe, in place of the ucrtbase import. Wine's ucrtbase memcmp compares 8 bytes a step in scalar
 // code, and the replay compares its state blocks and keys with it at every draw: 5.7% of the render thread outdoors on a
 // Ryzen Z1 under Proton (docs/proton.md). 32 bytes a step with AVX2 (the build targets x86-64-v3).
+// Windows builds for x86-64-v3 only: elsewhere the C library's own (glibc) is fast, and a --cpu v2 build has no AVX2.
+#if defined(_WIN32) && defined(__AVX2__)
 #include <immintrin.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -56,3 +58,5 @@ __attribute__((no_builtin("memcpy"))) void *memcpy(void *restrict dst, const voi
     }
     return dst;
 }
+
+#endif   // _WIN32 && __AVX2__
