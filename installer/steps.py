@@ -1191,6 +1191,52 @@ class Dlss(Step):
         return {'installed': DLSS_VERSION}
 
 
+# ---- 7b. textures
+
+BC7_LINE = re.compile(r'bc7: \d+ / \d+ files, (\d+) / (\d+) bytes')
+
+
+class Textures(Step):
+    """The BC7 texture cache (runtime/bc7_cache.c, after UltraTears): totk --bc7-build re-encodes the RomFS's ASTC
+    textures to BC7 once (minutes of CPU, gigabytes in <install>/bc7), so GPUs without ASTC load BC7 instead of
+    decoding to RGBA8 in play. A failure warns: the game then decodes as before and fills the cache as it goes."""
+
+    id = 'textures'
+
+    def key(self, ctx):
+        return fingerprint('textures-1', ctx.keys['extract'])
+
+    def current(self, ctx, record):
+        idx = ctx.dest / 'bc7' / 'bc7.idx'
+        return not record.get('failed') and idx.is_file() and idx.stat().st_size > 0
+
+    def run(self, ctx):
+        rep, dest = ctx.reporter, ctx.dest
+        logs = ctx.temp / 'logs'
+        logs.mkdir(parents=True, exist_ok=True)
+        log = logs / 'textures-bc7.log'
+        command = [str(dest / ('totk' + EXE)), '--romfs', str(dest / 'romfs'), '--bc7-build']
+        rep.log('run ' + ' '.join(command))
+        rep.progress('textures', 'encode', force=True)
+        with open(log, 'w', encoding='utf-8', newline='\n') as out:
+            proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=dest, text=True,
+                                    encoding='utf-8', errors='replace', bufsize=1, start_new_session=os.name != 'nt')
+            try:
+                for line in proc.stdout:
+                    out.write(line)
+                    m = BC7_LINE.match(line)
+                    if m:
+                        rep.progress('textures', 'encode', int(m.group(1)), int(m.group(2)), 'bytes')
+                code = proc.wait()
+            except BaseException:
+                kill_tree(proc)
+                raise
+        if code:
+            rep.warning('warn.textures_failed', code=code, log=str(log))
+            return {'failed': True}
+        return {}
+
+
 # ---- 8. clean up
 
 class Cleanup(Step):
@@ -1259,4 +1305,4 @@ def romfs_problem(romfs, expected):
 
 
 def all_steps():
-    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Dlss(), Cleanup()]
+    return [Check(), Fonts(), Extract(), Lift(), Compile(), Prepare(), Textures(), Dlss(), Cleanup()]
