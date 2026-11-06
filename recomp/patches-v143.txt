@@ -210,10 +210,10 @@ site zstd   main 1852314 979f9fb3 948a3733  # bl ZSTD_decompress_usingDDict -> p
 # from the request's result record ([x19+0x6b0], then [x8]), links it (main+0x155ec), reads [[actor+0x228]+0xb0]
 # (main+0x9a89d4) and takes a reference on that (main+0x2b8464). The record is sometimes reused by then (pointers into
 # .rodata, outside the address space, string data): c0000005 after 9 to 23 minutes of ability use. The record load goes
-# to a host function on the patch page (+0xfd0, runtime/ov_ability.c) that hands back 0 for a target failing the game's
+# to a host function on the patch page (+0xf70, runtime/ov_ability.c) that hands back 0 for a target failing the game's
 # own live-actor test, and the cbz after it skips the target for that frame, as for a null record.
 set ability  TOTK_ABILITY_GUARD  1
-site ability main 1bd01bc f9435a68 947c3f85   # ldr x8, [x19, #0x6b0] -> bl page+0xfd0
+site ability main 1bd01bc f9435a68 947c3f6d   # ldr x8, [x19, #0x6b0] -> bl page+0xf70
 
 # Spin waits, from tools/spin_waits.py --exefs build/extracted/v143/exefs --patches recomp/patches-v143.txt: loops that only
 # another thread can end; their back-edges pass rt_spin_gate (runtime/kernel.c), TOTK_SPIN=0 keeps the core.

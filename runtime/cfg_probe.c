@@ -446,7 +446,8 @@ int probe_cfg(void) {
         char name[96];
         snprintf(name, sizeof name, "TOTK_%s", m->key);
         plat_setenv(name, "");
-        CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
+        // output_res follows the display when no setting names one (cfg.c screen_default)
+        if (strcmp(m->key, "OUTPUT_RES")) CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
         int ok = 0;
         if (!m->values) ok = 1;
         else if (strstr(m->values, "..")) {
