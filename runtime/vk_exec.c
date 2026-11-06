@@ -998,7 +998,7 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
 
 // ---- chunked recording (TOTK_REPLAY_WORKERS)
 // A submission is recorded in chunks that start between passes, by TOTK_REPLAY_WORKERS threads (0: the sequential
-// replay; unset: 3/8 of the logical processors, at most 4, see chunked_on) and twice as many chunks (TOTK_REPLAY_CHUNKS), so a thread
+// replay, the default) and twice as many chunks (TOTK_REPLAY_CHUNKS), so a thread
 // that finishes early takes another: in the town at 4K on an RTX 5070 the replay goes from 8.2 to 4.5 ms
 // and the frame rate from 71 to 79; more threads add little, since the frame then waits for the GPU. A sequential scan on
 // the submitting thread applies only what is queue state: the fixed-function and bind ops, render targets, render
@@ -1527,18 +1527,7 @@ void vk_exec_contexts(void (*fn)(VkExec *ex)) {
 
 static int chunked_on(void) {
     if (SC.workers < 0) {
-        // Unset: 3/8 of the logical processors, at most 4 (UltraTears 95d375b, kuraeow/ultratears src/gfx/backend_vk.c):
-        // the game keeps 4-6 threads of its own busy, and recording threads past what is left took cores from it and
-        // from each other (8 processors: 3 threads 12.7-13.9 ms a frame, 4 threads 13.4-14.4, 2 threads 14.3-15.0).
-        // Fewer than 2 would gain nothing over the sequential replay. TOTK_REPLAY_WORKERS=0: sequential.
-        const char *w = cfg_get("TOTK_REPLAY_WORKERS");
-        if (w && *w) {
-            SC.workers = atoi(w);
-        } else {
-            SC.workers = (int)(plat_cpu_count() * 3 / 8);
-            if (SC.workers > 4) SC.workers = 4;
-            if (SC.workers < 2) SC.workers = 0;
-        }
+        SC.workers = cfg_int("TOTK_REPLAY_WORKERS");
         if (SC.workers < 0) SC.workers = 0;
         SC.chunks = cfg_int("TOTK_REPLAY_CHUNKS");
         if (SC.chunks <= 0) SC.chunks = 2 * SC.workers;
