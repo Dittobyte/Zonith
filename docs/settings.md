@@ -19,7 +19,7 @@ Many rows below are developer tools that only act together with another setting 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `dirty_census` | `1` keeps the dirty census in perf runs, which leave it out unless asked. | Adds write-watch work per submission. | Safe |
-| `pass_times` | `1` times every pass and dispatch on the GPU. | Adds timestamp queries and log lines. | Safe |
+| `pass_times` (default `0`) | `1` times every pass and dispatch on the GPU. | Adds timestamp queries and log lines. | Safe |
 | `probe_movie_bench` | `1` makes `--probe-movie` time the frame as well. | Acts only in that probe. | Safe |
 | `session_log` (default `0`) | `1` writes `logs/session.tsv`, one line per 60-frame window and one per slow frame, appended across launches. | Grows the file by a line a second. | Safe |
 | `session_spike_ms` (default `25`) | Frame time in ms from which `session_log` writes a line for that frame. | Smaller values write more lines. | Safe |

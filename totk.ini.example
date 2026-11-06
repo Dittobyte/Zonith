@@ -43,7 +43,7 @@
 # the GPU in order. In the town at 4K on an RTX 5070, 4 cut the replay from 8.2 to 4.5 ms a frame (71 to 79 fps); more
 # threads add little. Needs 8 or more logical processors to help. Contact shadows and DLSS (dlaa = 1) run in chunks too.
 # Read at start.
-# replay_workers =
+# replay_workers = 4
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
