@@ -1016,7 +1016,7 @@ static int bind_range(VkExec *ex, uint64_t addr, uint64_t size, uint64_t align, 
     if (n > max) n = max;
     if (!n) return 0;
     if (!written && (use == VK_MUSE_UBO || use == VK_MUSE_SSBO) && ub_bind(ex, addr, n, align, out)) {
-        count_use(VK_MCLS_SCRATCH, use, n);
+        count_use(ex->draw, VK_MCLS_SCRATCH, use, n);
         return 1;
     }
     if (sp.offset % align == 0) {
@@ -1208,9 +1208,10 @@ static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
 
 // Applies the updates of this submission that touch [a, a+n) onto out, oldest first (ub_bind's merged copies).
 static void upd_apply(const VkExec *ex, uint64_t a, uint8_t *out, size_t n) {
-    if (UPD.fence != ex->fence) return;
-    for (uint32_t i = UPD.n > UPD_N ? UPD.n - UPD_N : 0; i < UPD.n; i++) {
-        const typeof(UPD.u[0]) *e = &UPD.u[i % UPD_N];
+    VkExecDraw *D = ex->draw;
+    if (D->UPD.fence != ex->fence) return;
+    for (uint32_t i = D->UPD.n > UPD_N ? D->UPD.n - UPD_N : 0; i < D->UPD.n; i++) {
+        const typeof(D->UPD.u[0]) *e = &D->UPD.u[i % UPD_N];
         uint64_t lo = e->lo > a ? e->lo : a, hi = e->hi < a + n ? e->hi : a + n;
         if (lo < hi) memcpy(out + (lo - a), e->data + (lo - e->lo), hi - lo);
     }
@@ -2304,7 +2305,7 @@ static void bind_vertex_buffers(VkExec *ex) {
     // Only the streams the draw's vertex input reads (B.vmask, from vk_pipeline_set_dynamic): the game keeps about ten
     // bound and a draw reads a few. The others get the zero buffer, never a stale one: a buffer bound but not read must
     // still be a live handle.
-    uint32_t used = vb_used_on() && B.st_valid ? B.vmask : VK_PIPE_ALL_BINDINGS;
+    uint32_t used = vb_used_on() && D->B.st_valid ? D->B.vmask : VK_PIPE_ALL_BINDINGS;
     // A stream whose range is the one its bound buffer was resolved from, with no pool or mirror change since
     // (vk_mem_gen, read before any resolve), resolves to that buffer again: most draws change one stream or none.
     uint64_t gen = vk_mem_gen();
@@ -3653,7 +3654,8 @@ static int ub_bind(VkExec *ex, uint64_t addr, uint64_t n, uint64_t align, VkDesc
     VkBuffer b;
     VkDeviceSize o;
     uint8_t *dst = scratch(ex, n, &b, &o);
-    RS.volatile_ = 1;
+    VkExecDraw *D = ex->draw;
+    D->RS.volatile_ = 1;
     const uint8_t *base = vk_usnap_bytes(addr, n);
     VkMemSpan sp;
     if (base) memcpy(dst, base, n);

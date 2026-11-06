@@ -37,6 +37,9 @@ typedef struct Arena {
     VkBuffer buf;
     VmaAllocation alloc;
     uint8_t *map;
+    uint8_t *cpu;    // with DLSS (vk_dlaa_available), the same bytes in host memory for the CPU's reads (vk_usnap_bytes):
+                     // map is often device memory through the BAR, written fast but read back at about a microsecond a
+                     // cache line. Without DLSS nothing reads them back, and the bytes go into map in one copy.
     uint64_t size;
 } Arena;
 
@@ -284,8 +287,14 @@ void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence) {
     }
     if (!U.nreg) return;
     if (!(U.arena = arena_get(total))) return;
+    uint8_t *dst = U.arena->map;
+    if (vk_dlaa_available()) {
+        if (!U.arena->cpu && !(U.arena->cpu = malloc(U.arena->size))) rt_fatal("vk_usnap: out of memory");
+        dst = U.arena->cpu;
+    }
     for (int i = 0; i < U.nreg; i++)
-        memcpy(U.arena->map + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+        memcpy(dst + U.reg[i].off, (const void *)(uintptr_t)U.reg[i].lo, U.reg[i].hi - U.reg[i].lo);
+    if (dst != U.arena->map) memcpy(U.arena->map, dst, total);   // one sequential write into the device copy
     vmaFlushAllocation(vk_ctx()->vma, U.arena->alloc, 0, total);   // a no-op on coherent memory
     U.on = 1;
     U.subs++, U.regions += (uint64_t)U.nreg, U.bytes += total, U.copy_ns += kern_now_ns() - t0;
@@ -340,8 +349,8 @@ void vk_usnap_drop_at(uint64_t addr, uint64_t n, uint32_t at) { drop(addr, n, at
 
 uint64_t vk_usnap_gen(void) { return __atomic_load_n(&U.gen, __ATOMIC_RELAXED); }
 
-// the host copy: the CPU never reads the device copy back
-static uint8_t *host_copy(void) { return U.arena->host; }
+// the host copy where there is one (DLSS), else the device copy
+static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
 
 const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
 
@@ -353,7 +362,7 @@ const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).
 void vk_usnap_shutdown(void) {
     plat_mutex_lock(&free_lock);
-    for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a);
+    for (Arena *a = free_arenas, *next; a; a = next) next = a->next, vmaDestroyBuffer(vk_ctx()->vma, a->buf, a->alloc), free(a->cpu), free(a);
     free_arenas = NULL;
     plat_mutex_unlock(&free_lock);
 }
