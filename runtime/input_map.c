@@ -12,8 +12,6 @@
 #define STICK_MAX 32767
 #define DIAGONAL 23170   // STICK_MAX / sqrt(2)
 #define MOUSE_FULL_CPS 3000.0
-#define MOUSE_TILT_FLOOR 0.40
-#define MOUSE_MIN_TILT 0.02
 
 #define DEFAULT_KEYS \
     {KEY_W, B_SL_UP}, {KEY_A, B_SL_LEFT}, {KEY_S, B_SL_DOWN}, {KEY_D, B_SL_RIGHT},                  /* move */ \
@@ -22,7 +20,7 @@
     {KEY_SPACE, B_X}, {KEY_LSHIFT, B_B}, {KEY_E, B_A}, {KEY_Q, B_L}, {KEY_R, B_R}, \
     {KEY_LCTRL, B_STICK_L}, {KEY_C, B_STICK_R}, \
     {KEY_1, B_LEFT}, {KEY_2, B_UP}, {KEY_3, B_RIGHT}, {KEY_4, B_DOWN}, \
-    {KEY_TAB, B_PLUS}, {KEY_M, B_MINUS}
+    {KEY_TAB, B_PLUS}, {KEY_M, B_MINUS}, {KEY_G, B_SHAKE}
 
 // By position: south is Switch B, east A, west Y, north X (Nintendo layout); the Xbox layout swaps A with B and X with Y
 // (south A, as the Xbox labels; cross A on a PlayStation pad). The triggers are ZL and ZR.
@@ -33,7 +31,7 @@
     {PAD_ZR, B_ZR}
 #define NINTENDO_PADS DEFAULT_PADS(B_B, B_A, B_Y, B_X)
 #define XBOX_PADS DEFAULT_PADS(B_A, B_B, B_X, B_Y)
-enum { DEFAULT_KEY_COUNT = 26, DEFAULT_PAD_COUNT = 16 };
+enum { DEFAULT_KEY_COUNT = 27, DEFAULT_PAD_COUNT = 16 };
 _Static_assert(sizeof (Binding[]){DEFAULT_KEYS} / sizeof (Binding) == DEFAULT_KEY_COUNT, "DEFAULT_KEY_COUNT");
 
 static const InputMap defaults = {{DEFAULT_KEYS}, DEFAULT_KEY_COUNT, {{NINTENDO_PADS}, {XBOX_PADS}},
@@ -43,7 +41,7 @@ InputMap input_map = {{DEFAULT_KEYS}, DEFAULT_KEY_COUNT, {{NINTENDO_PADS}, {XBOX
 
 static const char *const action_names[ACTION_COUNT] = {
     "A", "B", "X", "Y", "LCLICK", "RCLICK", "L", "R", "ZL", "ZR", "PLUS", "MINUS", "LEFT", "UP", "RIGHT", "DOWN",
-    "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT", "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN"};
+    "LSTICK_LEFT", "LSTICK_UP", "LSTICK_RIGHT", "LSTICK_DOWN", "RSTICK_LEFT", "RSTICK_UP", "RSTICK_RIGHT", "RSTICK_DOWN", "SHAKE"};
 static const char *const pad_names[PAD_COUNT] = {
     NULL, "south", "east", "west", "north", "lstick", "rstick", "l", "r", "start", "back",
     "dpad_left", "dpad_up", "dpad_right", "dpad_down", "zl", "zr", "lpaddle1", "rpaddle1", "lpaddle2", "rpaddle2"};
@@ -145,7 +143,7 @@ int input_map_bind(const char *button, const char *list) {
         }
         if (!ok) {
             bad++;
-            rt_log("input: bind %s: ignoring '%s' (expected pad:<name> or key:<name>; stick directions take keys only)",
+            rt_log("input: bind %s: ignoring '%s' (expected pad:<name> or key:<name>; stick directions and SHAKE take keys only)",
                    button, tok);
         }
     }
@@ -291,11 +289,13 @@ int input_pad_layout_pick(const char *setting, int east_labelled_a) {
 }
 
 int input_prompts_pick(const char *prompts, const char *pad_layout) {
-    if (prompts && *prompts) return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
+    if (prompts && *prompts)
+        return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : !strcasecmp(prompts, "pc") ? PROMPTS_PC : PROMPTS_NINTENDO;
     return pad_layout && !strcasecmp(pad_layout, "xbox_prompts") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
 }
 
 const char *input_prompts_folder(int prompts, const char *pad_layout) {
+    if (prompts == PROMPTS_PC) return "romfs-patches-pc";
     if (prompts != PROMPTS_XBOX) return NULL;
     // The folders are read at start, before a pad is open: auto counts as Xbox, as for a pad without Nintendo labels.
     // A Nintendo-labelled pad under auto plays by label too (its A is on the button labelled A), so it matches as well.
@@ -317,6 +317,12 @@ uint64_t input_map_buttons(const uint8_t down[KEY_COUNT]) {
     return b;
 }
 
+int input_map_held(const uint8_t down[KEY_COUNT], int action) {
+    for (int i = 0; i < input_map.nkeys; i++)
+        if (input_map.keys[i].action == action && down[input_map.keys[i].key]) return 1;
+    return 0;
+}
+
 void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]) {
     int first = stick ? B_SR_LEFT : B_SL_LEFT, dir[4] = {0, 0, 0, 0};   // left, up, right, down
     for (int i = 0; i < input_map.nkeys; i++) {
@@ -329,20 +335,14 @@ void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]) {
     out[1] = dy * m;
 }
 
-// The mouse camera as a right-stick sample: counts per second times sens of full (MOUSE_FULL_CPS counts a second at
-// sens 1), then the length floored at MOUSE_TILT_FLOOR of full so every real movement turns the camera at once and
-// grows with the speed to full; the direction is the movement's own. Below MOUSE_MIN_TILT nothing reports.
 void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]) {
     out[0] = out[1] = 0;
     if (!(dt_s > 0) || !(sens > 0)) return;
     double k = STICK_MAX * (double)sens / (MOUSE_FULL_CPS * dt_s);
     double x = dx * k, y = -dy * k, len = sqrt(x * x + y * y);
-    double m = len / STICK_MAX;
-    if (m < MOUSE_MIN_TILT) return;
-    double mag = (MOUSE_TILT_FLOOR + (1.0 - MOUSE_TILT_FLOOR) * (m > 1 ? 1 : m)) * STICK_MAX;
-    double s = mag / len;
-    out[0] = (int32_t)lrint(x * s);
-    out[1] = (int32_t)lrint(y * s);
+    if (len > STICK_MAX) { x *= STICK_MAX / len; y *= STICK_MAX / len; }
+    out[0] = (int32_t)lrint(x);
+    out[1] = (int32_t)lrint(y);
 }
 
 void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
@@ -362,42 +362,6 @@ float input_pad_deadzone(int stick) {
 
 double input_stick_percent(int32_t x, int32_t y) {
     return sqrt((double)x * x + (double)y * y) * 100.0 / STICK_MAX;
-}
-
-static double clampd(double v, double lo, double hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-#define MOUSE_DEG_PER_COUNT 0.022   // at sensitivity 1
-#define MOUSE_PITCH_RATE 0.7237     // the pitch rate at full deflection over the yaw rate (the sibling game's 61.8 / 85.39)
-#define MOUSE_MAX_CARRY_DEG 12.0
-
-void input_mouse_camera(MouseCamState *st, int32_t dx, int32_t dy, double dt_s, const MouseCamCfg *c, int32_t out[2]) {
-    out[0] = out[1] = 0;
-    if (!st || !c) return;
-    if (!(dt_s > 0) || !(c->sens > 0)) {
-        st->carry[0] = st->carry[1] = 0;
-        return;
-    }
-    const double sens = c->sens, curve = clampd(c->curve, 1.0, 3.0), dz = clampd(c->deadzone, 0.0, 0.5);
-    const double rate = c->rate >= 1 ? c->rate : 85.0;
-    const double yaw = dx * MOUSE_DEG_PER_COUNT * sens + st->carry[0];                                  // right +
-    const double pitch = -dy * MOUSE_DEG_PER_COUNT * sens * clampd(c->y_ratio, 0.25, 4.0) + st->carry[1];   // up +
-    // the post-curve amount of full rate that turns that angle in dt_s; past full deflection the direction is kept
-    double ux = yaw / dt_s / rate, uy = pitch / dt_s / (rate * MOUSE_PITCH_RATE);
-    double m = sqrt(ux * ux + uy * uy);
-    if (m > 1.0) {
-        ux /= m;
-        uy /= m;
-        m = 1.0;
-    }
-    st->carry[0] = clampd(yaw - ux * rate * dt_s, -MOUSE_MAX_CARRY_DEG, MOUSE_MAX_CARRY_DEG);
-    st->carry[1] = clampd(pitch - uy * rate * MOUSE_PITCH_RATE * dt_s, -MOUSE_MAX_CARRY_DEG, MOUSE_MAX_CARRY_DEG);
-    if (fabs(st->carry[0]) < 1e-6) st->carry[0] = 0;
-    if (fabs(st->carry[1]) < 1e-6) st->carry[1] = 0;
-    if (m < 1e-9) return;
-    // the inverse of the game's response: raw = dead zone + amount^(1/curve) * (1 - dead zone), along the same direction
-    const double raw = dz + pow(m, 1.0 / curve) * (1.0 - dz);
-    out[0] = (int32_t)lrint(ux / m * raw * STICK_MAX);
-    out[1] = (int32_t)lrint(uy / m * raw * STICK_MAX);
 }
 
 // Minus and Plus held together open or close the menu. *held: latched from the poll where both go down until neither is

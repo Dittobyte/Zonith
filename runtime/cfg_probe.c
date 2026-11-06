@@ -234,6 +234,10 @@ int probe_cfg(void) {
     CHECK(input_map_buttons(dn) == (1ull << B_ZR | 1ull << B_PLUS | 1ull << B_MINUS | 1ull << B_STICK_L | 1ull << B_RIGHT),
           "keys: X ZR, Tab Plus, M Minus, Left Ctrl stick click, 3 D-pad right");
     memset(dn, 0, sizeof dn);
+    dn[KEY_G] = 1;
+    CHECK(input_map_buttons(dn) == 0 && input_map_held(dn, B_SHAKE) && !input_map_held(dn, B_A),
+          "keys: G shakes and presses no button");
+    memset(dn, 0, sizeof dn);
     dn[KEY_W] = 1;
     input_map_stick(dn, 0, st);
     CHECK(st[0] == 0 && st[1] == 32767, "keys: W is left stick up");
@@ -251,13 +255,13 @@ int probe_cfg(void) {
     input_map_stick(dn, 0, st);
     CHECK(st[0] == 0 && st[1] == 0, "keys: arrows leave the left stick alone");
     input_mouse_stick(30, 0, 1.0 / 60, 1, st);
-    CHECK(st[0] == 24903 && st[1] == 0, "mouse: 30 counts in 1/60 s (60% proportional) report 76% with the tilt floor");
+    CHECK(st[0] == 32767 * 1800 / 3000 && st[1] == 0, "mouse: 30 counts in 1/60 s is 60% right");
     input_mouse_stick(0, -10, 1.0 / 60, 1, st);
-    CHECK(st[0] == 0 && st[1] == 17039, "mouse: moving up is stick up (52% with the tilt floor)");
+    CHECK(st[0] == 0 && st[1] > 0, "mouse: moving up is stick up");
     input_mouse_stick(30, 0, 1.0 / 30, 1, st);
-    CHECK(st[0] == 19005, "mouse: the same counts over twice the time tilt less (58%, the floor holds the low end up)");
+    CHECK(st[0] == 32767 * 900 / 3000, "mouse: the same counts over twice the time are half the deflection");
     input_mouse_stick(15, 0, 1.0 / 60, 2, st);
-    CHECK(st[0] == 24903, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
+    CHECK(st[0] == 32767 * 1800 / 3000, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
     input_mouse_stick(1000, 1000, 1.0 / 60, 1, st);
     CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
     input_mouse_stick(30, 0, 1.0 / 60, 0, st);
@@ -289,25 +293,6 @@ int probe_cfg(void) {
     CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
               input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
           "stick percent: an axis's end is 100%, the centre 0%, round in between");
-    {   // the native camera: the same distance is the same angle at any speed and frame rate; a flick's excess is carried
-        const MouseCamCfg cc = {1, 1, 2, 0.2f, 85};
-        MouseCamState cs = {{0, 0}};
-        int32_t o[2];
-        input_mouse_camera(&cs, 0, 0, 1.0 / 60, &cc, o);
-        CHECK(o[0] == 0 && o[1] == 0, "mouse camera: no motion is a neutral stick");
-        input_mouse_camera(&cs, 1, 0, 1.0 / 60, &cc, o);
-        CHECK(o[0] > 0.2 * 32767 && o[1] == 0, "mouse camera: one count is past the dead zone");
-        input_mouse_camera(&cs, 0, -10, 1.0 / 60, &cc, o);
-        CHECK(o[1] > 0, "mouse camera: moving up is stick up");
-        cs = (MouseCamState){{0, 0}};
-        input_mouse_camera(&cs, 2000, 0, 1.0 / 60, &cc, o);
-        CHECK(o[0] == 32767 && cs.carry[0] > 0 && cs.carry[0] <= 12.0, "mouse camera: a flick saturates and the rest is carried (12 degrees at most)");
-        input_mouse_camera(&cs, 0, 0, 1.0 / 60, &cc, o);
-        CHECK(o[0] > 0, "mouse camera: the carry keeps turning after the mouse stops");
-        const MouseCamCfg off = {0, 1, 2, 0.2f, 85};
-        input_mouse_camera(&cs, 50, 0, 1.0 / 60, &off, o);
-        CHECK(o[0] == 0 && cs.carry[0] == 0, "mouse camera: sensitivity 0 is off");
-    }
     // Gamepad layouts (input_map.c)
     CHECK(input_pad_layout_pick("auto", 1) == PAD_LAYOUT_NINTENDO && input_pad_layout_pick(NULL, 0) == PAD_LAYOUT_XBOX,
           "pad layout: automatic is Nintendo for an east button labelled A, Xbox otherwise");
@@ -320,6 +305,11 @@ int probe_cfg(void) {
     CHECK(input_prompts_pick(NULL, "auto") == PROMPTS_NINTENDO && input_prompts_pick("", "xbox") == PROMPTS_NINTENDO &&
               input_prompts_pick("Xbox", "nintendo") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox") == PROMPTS_NINTENDO,
           "prompts: the game's own unless set to Xbox");
+    CHECK(input_prompts_pick("PC", "nintendo") == PROMPTS_PC && input_prompts_pick("pc", "xbox_prompts") == PROMPTS_PC &&
+              EQ(input_prompts_folder(PROMPTS_PC, "nintendo"), "romfs-patches-pc") &&
+              EQ(input_prompts_folder(PROMPTS_PC, "xbox"), "romfs-patches-pc") &&
+              EQ(input_prompts_folder(PROMPTS_PC, NULL), "romfs-patches-pc"),
+          "prompts: pc shows the keyboard and mouse whatever the pad layout");
     CHECK(input_prompts_pick(NULL, "xbox_prompts") == PROMPTS_XBOX && input_prompts_pick("nintendo", "xbox_prompts") == PROMPTS_NINTENDO,
           "prompts: 0.1.9's pad_layout = xbox_prompts means Xbox while prompts is unset");
     CHECK(!input_prompts_folder(PROMPTS_NINTENDO, "nintendo") && !input_prompts_folder(PROMPTS_NINTENDO, "xbox"),
