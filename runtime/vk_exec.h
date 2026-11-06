@@ -163,6 +163,7 @@ typedef struct VkExec {
     const VkExecJob *jobs;               // its planned records (contact shadows, DLSS)
     uint32_t njobs;
     uint32_t upd_n, cond_i, job_i;       // updates, results and records before the op being recorded
+    uint64_t chunk_serial;               // chunks this context has recorded (the cube twins' copies)
     uint32_t drop_n;                     // ops before it that may write uniform ranges (vk_usnap_drop_at)
     const uint32_t *wpos;                // the positions of the draws and dispatches among those ops (vk_exec_draw_writes)
     uint32_t wpos_i, wpos_end;           // the next of them, and the end of the chunk's

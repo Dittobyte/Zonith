@@ -1292,6 +1292,7 @@ static void chunk_record(Rec *r, int k) {
     copy_state(ex, &c->st);
     ex->rt_resolved = 0, ex->dirty = VK_EXEC_DIRTY_ALL, ex->tex_serial++, ex->fb_fs = NULL;
     vk_exec_draw_new_cb(ex);
+    ex->chunk_serial++;
     ex->chunked = 1, ex->upd = SC.upd, ex->cond = SC.cond, ex->jobs = SC.jobs, ex->njobs = c->job_end;
     ex->upd_n = c->upd_n, ex->cond_i = c->cond_i, ex->job_i = c->job_i, ex->drop_n = c->drop_n, ex->pos = c->pos;
     ex->wpos = SC.wpos, ex->wpos_i = c->wpos_i, ex->wpos_end = c->wpos_end;
