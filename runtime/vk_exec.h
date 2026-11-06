@@ -131,9 +131,6 @@ void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers): the replay continues in a new one (vk_sync_split).
 void vk_exec_draw_new_cb(void);
-// The GPU copies of the UpdateUniformBuffers deferred to the pass end (vk_exec_draw.c op_update_ub), after a
-// barrier of their own; vk_exec.c calls it with the pass ended, before a full barrier, the split and the end.
-void vk_exec_draw_flush_updates(VkExec *ex);
 void vk_exec_mem_barrier(VkExec *ex);   // a full memory barrier alone, no layout change (vk_exec.c)
 // vk_exec_draw.c: the vertex and fragment shader of the last draw recorded into this command buffer (NULL: none yet).
 void vk_exec_draw_shaders(const GfxShader **vs, const GfxShader **fs);
@@ -158,8 +155,6 @@ typedef struct {
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
-    uint64_t ub_deferred, ub_direct, ub_flushes;   // UpdateUniformBuffers copied at the pass end, copied at once,
-                                                   // and the flushes of the deferred copies (vk_exec_draw.c)
 } VkExecFrame;
 extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
