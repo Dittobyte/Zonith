@@ -18,6 +18,11 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `dirty_census` | `1` keeps the dirty census in perf runs, which leave it out unless asked. | Adds write-watch work per submission. | Safe |
+| `pass_times` | `1` times every pass and dispatch on the GPU. | Adds timestamp queries and log lines. | Safe |
+| `probe_movie_bench` | `1` makes `--probe-movie` time the frame as well. | Acts only in that probe. | Safe |
+| `session_log` (default `0`) | `1` writes `logs/session.tsv`, one line per 60-frame window and one per slow frame, appended across launches. | Grows the file by a line a second. | Safe |
+| `session_spike_ms` (default `25`) | Frame time in ms from which `session_log` writes a line for that frame. | Smaller values write more lines. | Safe |
 | `astc_time` | `1` times the GPU dispatches of each ASTC texture decode and logs the time per block footprint and the largest call. | Adds GPU timestamp queries around every decode; if the queue has no timestamps or no `hostQueryReset`, the log says the decodes are not timed and nothing is measured. | Caution |
 | `bind_stats` | `1` counts bindings and descriptors per draw of each stage and how much of the bound state changes between draws. | Adds per-draw bookkeeping to the render thread and extra log output; frames get slower. | Caution |
 | `contact_debug` | `1` draws the contact-shadow factor in grey in place of the picture. | The frame shows a grey debug image while it is set; has no effect when contact shadows are off. | Caution |
@@ -119,6 +124,17 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `amd_preset` (default `0`) | `1` turns the recorder thread off and decodes ASTC on the CPU, for keys the player left unset. | Slower, chosen after device-lost reports on RDNA 2. | Caution |
+| `bc7` (default on) | `0` turns the BC7 texture cache off. | ASTC textures decode to RGBA8 again and take more memory. | Safe |
+| `bc7_dir` (default `bc7`) | Folder of the BC7 cache's `bc7.pack` and `bc7.idx`, next to the exe unless absolute. | Another folder starts an empty cache. | Safe |
+| `bc7_quality` (default `0`) | bc7enc uber level of textures encoded in game; the build step uses 2. | Higher values cost more CPU. | Caution |
+| `bc7_threads` | Threads of the background BC7 encoder. | More threads take CPU from the game. | Caution |
+| `freeze_backoff` (default `1`) | `0` makes every region wait `freeze_idle` submissions, without doubling the wait for regions that thaw soon. | More freeze and thaw cycles, each a fault and two page protection calls. | Caution |
+| `freeze_shadow` (default `1`) | `0` keeps shadow syncs from putting idle regions up for freezing. | More write-watch queries per frame. | Caution |
+| `mem_reserve` (default `2048`) | MiB of system memory kept free on an integrated GPU; below it released textures are dropped. `0` turns it off. | Lower values risk running out of commit in the driver. | Caution |
+| `wb_invalidate` (default `1`) | `0` keeps write-back snapshots of images the game overwrote. | Those snapshots write stale texels back. | Risky |
+| `wb_snapshot` (default `1`) | How write-back snapshots of GPU images apply: `0` off, `1` the snapshot wins, `2` a snapshot is skipped where the CPU wrote since. | Changes which bytes reach guest memory. | Risky |
+| `ww_once` (default `1`) | `0` makes every shadow sync query its pool's regions itself. | More write-watch queries per submission. | Caution |
 | `block_views_3d` (default `0`) | `1` gives 3D block-compressed images block views too. | On some AMD cards a GPU write past the end of the image's memory loses the Vulkan device, and the game stops. | Risky |
 | `feedback` | `0` samples a target that an earlier draw of the same pass wrote with no barrier; `restart` ends and restarts the pass behind a full barrier; otherwise the feedback-loop layout is used when the GPU supports it. | `0` brings back the old behaviour that the barrier fixed, so the picture can break in passes that read a target they draw into; `restart` costs extra passes. | Risky |
 | `flush_span` (default `0`) | `1` copies one span from the lowest to the highest flushed address of a pool, as an older version did. | Copies far more data to the GPU in crowded towns: an estimated 30-50 ms of GPU time per large copy over PCIe 3.0 x8. | Caution |
@@ -175,6 +191,7 @@ Many rows below are developer tools that only act together with another setting 
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `ability_guard` (default `1`) | `0` skips the check that drops a stale Recall or Ultrahand target. | The crash the check prevents comes back. | Risky |
 | `app_pool` | Size in bytes of the guest application memory pool; accepts decimal or `0x` hex. | The default depends on the resolution settings; `0` stops the start with a message, and too small a pool leaves the game without memory. | Risky |
 | `audio_off` | Any value mixes audio without opening an output device. | The game runs in silence and reports two channels; same as `audio = none`. | Caution |
 | `one_per_core` (default `0`) | `1` keeps the process on the first logical processor of each physical core; `ab` switches it with the `ab` blocks. | Busy threads stop sharing a core with a sibling thread, which can help or hurt on the CPU; it only applies when the CPU has hyperthreads. | Caution |
@@ -192,6 +209,7 @@ These names are code patch sets built into the generated game code (`recomp/patc
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `heropath_realtime` (default `1`) | `0` steps the map's Hero's Path replay per frame again, so it runs faster at a higher frame rate. | Only the replay's speed changes. | Safe |
 | `aspect_patch` (default `0`) | Patch set that feeds the camera the output's aspect ratio when it is not 16:9. | The resolution code switches this set on or off itself at start, so a value here is replaced; the code does not settle what a manual value does. | Unknown |
 | `fov_patch` (default `0`) | Patch set that scales the camera's vertical view angle by the field-of-view setting. | The resolution code switches this set itself whenever the field of view is not 100 percent; a manual value is replaced. | Unknown |
 | `mouse_direct_patch` (default `1`) | Patch set of the hooks in the game's camera code behind `mouse_mode = direct` on game 1.4.3. | `0` stops `mouse_mode = direct` from taking effect; other mouse modes are unaffected. | Safe |
