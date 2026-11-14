@@ -18,6 +18,13 @@
 
 #include "platform.h"
 
+// Hybrid laptops: the drivers read these exports of the executable when it starts and run it on the dedicated GPU.
+// NVIDIA Optimus can otherwise hide its GPU from a program it put on the integrated one, whatever the Windows and NVIDIA
+// settings say; AMD switchable graphics read the second one. TOTK_GPU_INDEX still picks another GPU. Savage Wind Recomp
+// exports the same two (runtime/platform/windows.c).
+__declspec(dllexport) DWORD NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+
 _Static_assert(sizeof(PlatMutex) == sizeof(SRWLOCK), "PlatMutex holds an SRWLOCK");
 _Static_assert(sizeof(PlatCond) == sizeof(CONDITION_VARIABLE), "PlatCond holds a CONDITION_VARIABLE");
 
@@ -297,6 +304,98 @@ uint32_t plat_cpu_usable(void) {
     return plat_cpu_count();
 }
 
+// ---- performance cores of a hybrid CPU
+// An Intel CPU with P-cores and E-cores (a Core 5 210H: 4 P-cores with two threads each, 4 E-cores) runs a thread on an
+// E-core at about 60% of a P-core's speed, and the frame waits for its slowest critical thread. The few threads every
+// frame goes through ask for the P-cores (plat_thread_perf_core): their selected CPU sets are the logical processors
+// above the lowest efficiency class that the process affinity allows. A thread's CPU sets bind it like an affinity
+// mask, except that processors the system reserves for itself are left out instead of failing. Nothing is selected
+// on a CPU with one efficiency class, or when the affinity already leaves only P-cores or only E-cores. LAS Recomp
+// does the same for its game, render and vsync threads (runtime/platform/windows.c plat_thread_perf_core).
+// Nothing is selected either below PC_MIN_CORES physical P-cores (an i5-1235U or Core 3 100U has 2): the five bound
+// threads (perf_core_thread) and a spinning recorder would crowd two cores and their hyperthreads while the E-cores
+// stay idle, which can be slower than letting the scheduler place them.
+#define PC_MIN_CORES 4
+static ULONG *pc_ids;   // the CPU set ids of the allowed P-core logical processors; NULL: none selected
+static ULONG pc_n;
+
+int plat_perf_core_setup(char *why, size_t n) {
+    ULONG len = 0;
+    GetSystemCpuSetInformation(NULL, 0, &len, GetCurrentProcess(), 0);
+    uint8_t *buf = len ? malloc(len) : NULL;
+    if (!buf || !GetSystemCpuSetInformation((PSYSTEM_CPU_SET_INFORMATION)buf, len, &len, GetCurrentProcess(), 0)) {
+        free(buf);
+        snprintf(why, n, "no CPU set information (error %lu)", GetLastError());
+        return 0;
+    }
+    // The process affinity mask covers its first processor group only: it filters on a single-group system.
+    DWORD_PTR proc = 0, sys = 0;
+    int filter = GetActiveProcessorGroupCount() == 1 && GetProcessAffinityMask(GetCurrentProcess(), &proc, &sys) && proc;
+    int lo = 255, hi = -1, all = 0;
+    for (ULONG off = 0; off < len;) {
+        SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
+        if (!i->Size) break;
+        if (i->Type == CpuSetInformation) {
+            int ec = i->CpuSet.EfficiencyClass;
+            lo = ec < lo ? ec : lo, hi = ec > hi ? ec : hi, all++;
+        }
+        off += i->Size;
+    }
+    if (!all || hi <= lo) {
+        free(buf);
+        snprintf(why, n, "not a hybrid CPU (%d logical processors, one efficiency class)", all);
+        return 0;
+    }
+    ULONG *ids = calloc((size_t)all, sizeof *ids);
+    uint16_t *cores = calloc((size_t)all, sizeof *cores);   // group << 8 | core index of each allowed physical P-core
+    int np = 0, ne = 0, ok_p = 0, ok_e = 0, nc = 0;
+    for (ULONG off = 0; ids && cores && off < len;) {
+        SYSTEM_CPU_SET_INFORMATION *i = (SYSTEM_CPU_SET_INFORMATION *)(buf + off);
+        if (!i->Size) break;
+        if (i->Type == CpuSetInformation) {
+            int perf = i->CpuSet.EfficiencyClass > lo;
+            int allowed = !filter || (i->CpuSet.Group == 0 && i->CpuSet.LogicalProcessorIndex < 64 &&
+                                      (proc >> i->CpuSet.LogicalProcessorIndex) & 1);
+            perf ? np++ : ne++;
+            if (allowed) perf ? ok_p++ : ok_e++;
+            if (allowed && perf) {
+                ids[pc_n++] = i->CpuSet.Id;
+                uint16_t key = (uint16_t)(i->CpuSet.Group << 8 | i->CpuSet.CoreIndex);
+                int k = 0;
+                while (k < nc && cores[k] != key) k++;
+                if (k == nc) cores[nc++] = key;
+            }
+        }
+        off += i->Size;
+    }
+    int counted = ids && cores;
+    free(buf);
+    free(cores);
+    if (!counted || !ok_p || !ok_e) {
+        free(ids);
+        pc_n = 0;
+        snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors; the affinity allows %d + %d, so it decides",
+                 np, ne, ok_p, ok_e);
+        return 0;
+    }
+    if (nc < PC_MIN_CORES) {
+        free(ids);
+        pc_n = 0;
+        snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors on %d P-cores, fewer than %d", np, ne, nc,
+                 PC_MIN_CORES);
+        return 0;
+    }
+    pc_ids = ids;
+    snprintf(why, n, "hybrid CPU, %d P-core + %d E-core logical processors%s", np, ne,
+             ok_p != np || ok_e != ne ? " (affinity-limited)" : "");
+    return (int)pc_n;
+}
+
+int plat_thread_perf_core(void) {
+    if (!pc_ids) return -1;
+    return SetThreadSelectedCpuSets(GetCurrentThread(), pc_ids, pc_n) ? 1 : 0;
+}
+
 // PLAT_PRIO_* are the THREAD_PRIORITY_* values.
 void plat_thread_priority(int prio) { SetThreadPriority(GetCurrentThread(), prio); }
 void plat_thread_set_priority(PlatThread *t, int prio) { SetThreadPriority(t->h, prio); }
@@ -326,6 +425,17 @@ uint64_t plat_counter_hz(void) { return qpc_freq(); }
 
 // The default timer tick is 15.6 ms; a 1 ms wait would cost a full tick.
 void plat_timer_1ms(void) { timeBeginPeriod(1); }
+
+// Windows 11 runs the threads of a process it deems in the background at EcoQoS (on the E-cores of a hybrid Intel CPU,
+// at a low clock) and ignores its timer resolution while its window is hidden. The game is always latency-bound, so it
+// opts out of both. Windows before 10 1709 does not know the class: 0.
+int plat_power_full(void) {
+    PROCESS_POWER_THROTTLING_STATE s = {
+        .Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION,
+        .ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION,
+        .StateMask = 0};
+    return SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &s, sizeof s) ? 1 : 0;
+}
 
 static PlatScale qpc_ns;   // set before main, so no thread reads it half written
 
@@ -634,8 +744,21 @@ void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
 
 static void (*crash_fn)(const PlatCrash *c);
 
+// The faulting thread's general registers, for the report to tie the faulting instruction to its operands.
+static void regs_of(const CONTEXT *x, PlatCrash *c) {
+    const DWORD64 r[16] = {x->Rax, x->Rcx, x->Rdx, x->Rbx, x->Rsp, x->Rbp, x->Rsi, x->Rdi,
+                           x->R8,  x->R9,  x->R10, x->R11, x->R12, x->R13, x->R14, x->R15};
+    for (int i = 0; i < 16; i++) c->gpr[i] = r[i];
+    c->has_regs = 1;
+}
+
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep);
+
 static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
+    // Heap corruption is raised by the heap manager, which then ends the process itself: it never reaches the
+    // unhandled-exception filter, so it is reported from here, wherever the heap was called from.
+    if (code == 0xc0000374u) return crash_filter(ep);   // STATUS_HEAP_CORRUPTION
     const char *what = code == EXCEPTION_ACCESS_VIOLATION ? "access violation"
                      : code == EXCEPTION_ILLEGAL_INSTRUCTION ? "illegal instruction"
                      : code == EXCEPTION_INT_DIVIDE_BY_ZERO ? "integer division by zero"
@@ -651,6 +774,7 @@ static LONG CALLBACK crash_veh(EXCEPTION_POINTERS *ep) {
     PlatCrash c = {what, (uint32_t)code, rip, rip - (uintptr_t)mi.lpBaseOfDll, -1, 0};
     if (code == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
         c.access = (int)ep->ExceptionRecord->ExceptionInformation[0], c.addr = ep->ExceptionRecord->ExceptionInformation[1];
+    regs_of(ep->ContextRecord, &c);
     crash_fn(&c);
     return EXCEPTION_CONTINUE_SEARCH;
 }
@@ -673,6 +797,134 @@ __attribute__((noinline)) static void crash_from_runtime(const char *what, uint3
     crash_fn(&c);
 }
 
+// The name a DLL records for itself in its export directory ("amdvlk64.dll"). Read from its mapped headers, not through
+// the loader, whose lock another thread may hold when the process crashes.
+static const char *image_name(const char *base) {
+    const IMAGE_NT_HEADERS64 *nt = (const void *)(base + ((const IMAGE_DOS_HEADER *)base)->e_lfanew);
+    const IMAGE_DATA_DIRECTORY *d = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!d->VirtualAddress || !d->Size) return "unnamed module";
+    return base + ((const IMAGE_EXPORT_DIRECTORY *)(base + d->VirtualAddress))->Name;
+}
+
+// The return addresses on the crashed thread's stack, innermost first, with their modules: unwinds the faulting context
+// with the x64 unwind tables; a function without a table entry (a leaf, or address 0 after a call through a null
+// pointer) has its return address on top of the stack. The walk stops at return address 0 (the thread's first frame)
+// and when the stack pointer leaves the thread's stack, so a damaged stack ends it instead of faulting. A driver can
+// nest deeper than the report holds, so frames in other modules stop being kept after the first 12 (counted in
+// frames_left_out) and the frames in this executable, which name the host call that ran into the driver, still fit.
+static void frames_of(const CONTEXT *at, PlatCrash *x) {
+    enum { MAX = sizeof x->frames / sizeof *x->frames, OTHER_MAX = 12 };
+    CONTEXT c = *at;
+    ULONG_PTR low, high;
+    GetCurrentThreadStackLimits(&low, &high);
+    void *exe = GetModuleHandleW(NULL);
+    int other = 0;
+    for (int i = 0; i < 256 && x->nframes < MAX && (c.Rip || !i) && c.Rsp >= low && c.Rsp + 8 <= high; i++) {
+        DWORD64 img;
+        RUNTIME_FUNCTION *fe = RtlLookupFunctionEntry(c.Rip, &img, NULL);
+        if (fe) {
+            void *data;
+            DWORD64 frame;
+            RtlVirtualUnwind(UNW_FLAG_NHANDLER, img, c.Rip, fe, &c, &data, &frame, NULL);
+        } else {
+            c.Rip = *(const DWORD64 *)c.Rsp;
+            c.Rsp += 8;
+        }
+        if (!c.Rip) break;
+        void *base = NULL;
+        RtlPcToFileHeader((void *)(uintptr_t)c.Rip, &base);
+        if (base != exe && other++ >= OTHER_MAX) {
+            x->frames_left_out++;
+            continue;
+        }
+        int n = x->nframes++;
+        x->frames[n] = (uintptr_t)c.Rip;
+        x->frame_module[n] = base == exe ? NULL : base ? image_name(base) : "";
+        x->frame_offset[n] = (uintptr_t)c.Rip - (uintptr_t)base;
+    }
+}
+
+// MSVC's C++ throw (0xe06d7363) passes the thrown object in ExceptionInformation[1], its ThrowInfo in [2] and the image
+// base the ThrowInfo's 32-bit offsets are relative to in [3] (magic 0x19930520..0x19930522 in [0]). The ThrowInfo lists
+// the types a catch may match, the thrown type first; each type descriptor holds a vtable pointer, a spare pointer and
+// the decorated name. A std::exception keeps its what() text in the pointer right after its vtable pointer (MSVC's
+// __std_exception_data). Every read is checked: the exception may come from a damaged heap.
+typedef struct { uint32_t attributes; int32_t unwind, forward_compat, catchable_types; } CxxThrowInfo;
+typedef struct { uint32_t properties; int32_t type, this_mdisp, this_pdisp, this_vdisp, size, copy; } CxxCatchableType;
+
+// Copies the string at p into buf (cut to n - 1 characters), checking each page before reading it; NULL when the first
+// byte cannot be read.
+static const char *copy_cstr(uintptr_t p, char *buf, size_t n) {
+    size_t i = 0;
+    for (; p && i + 1 < n; i++) {
+        if ((!i || !((p + i) & 4095)) && !plat_mem_readable(p + i, 1)) break;
+        if (!(buf[i] = ((const char *)p)[i])) return buf;
+    }
+    buf[i] = 0;
+    return i ? buf : NULL;
+}
+
+static void cxx_info(const EXCEPTION_RECORD *er, PlatCrash *x) {
+    if (er->NumberParameters < 4 || er->ExceptionInformation[0] - 0x19930520u > 2) return;
+    uintptr_t obj = er->ExceptionInformation[1], info = er->ExceptionInformation[2],
+              base = er->ExceptionInformation[3];
+    if (!info || !plat_mem_readable(info, sizeof(CxxThrowInfo))) return;
+    const CxxThrowInfo *ti = (const void *)info;
+    uintptr_t arr = base + (uintptr_t)(intptr_t)ti->catchable_types;
+    if (!ti->catchable_types || !plat_mem_readable(arr, 4)) return;
+    int32_t n = *(const int32_t *)arr;
+    if (n <= 0 || n > 64 || !plat_mem_readable(arr + 4, 4u * (uint64_t)n)) return;
+    static char type[128], what[256];   // the crash report runs once: crash_fn ends the process
+    int exception = 0;
+    for (int32_t i = 0; i < n; i++) {
+        uintptr_t ct = base + (uintptr_t)(intptr_t)((const int32_t *)(arr + 4))[i];
+        if (!plat_mem_readable(ct, sizeof(CxxCatchableType))) continue;
+        uintptr_t td = base + (uintptr_t)(intptr_t)((const CxxCatchableType *)ct)->type;
+        char name[64];
+        if (!copy_cstr(td + 16, i ? name : type, i ? sizeof name : sizeof type))   // past vtable and spare pointers
+            continue;
+        if (!i) x->cxx_type = type;
+        if (!strcmp(i ? name : type, ".?AVexception@std@@")) exception = 1;
+    }
+    if (exception && obj && plat_mem_readable(obj + 8, 8))
+        x->cxx_what = copy_cstr(*(const uintptr_t *)(obj + 8), what, sizeof what);
+}
+
+// The last-chance filter: an exception no handler took, in any module. crash_veh reports faults in this executable as
+// they happen; this one catches the rest, which used to end the process with no line in the log: a fault in a GPU
+// driver's own thread or in a driver call (vkQueueSubmit, vkAllocateMemory), a C++ exception a library let escape, a
+// call through a null pointer (rip 0, outside every module). Windows calls it only after every handler declined, so
+// the exceptions drivers raise and catch themselves never get here; it costs nothing until a crash.
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    DWORD code = er->ExceptionCode;
+    uintptr_t rip = (uintptr_t)ep->ContextRecord->Rip;
+    PlatCrash c = {code == EXCEPTION_ACCESS_VIOLATION        ? "access violation"
+                   : code == EXCEPTION_ILLEGAL_INSTRUCTION   ? "illegal instruction"
+                   : code == EXCEPTION_INT_DIVIDE_BY_ZERO    ? "integer division by zero"
+                   : code == EXCEPTION_PRIV_INSTRUCTION      ? "privileged instruction"
+                   : code == EXCEPTION_STACK_OVERFLOW        ? "stack overflow"
+                   : code == EXCEPTION_IN_PAGE_ERROR         ? "in-page error"
+                   : code == EXCEPTION_BREAKPOINT            ? "breakpoint"
+                   : code == 0xe06d7363u                     ? "C++ exception"
+                   : code == 0xc0000374u                     ? "heap corruption"   // STATUS_HEAP_CORRUPTION
+                                                             : "unhandled exception",
+                   (uint32_t)code, rip, 0, -1, 0};
+    if (code == EXCEPTION_ACCESS_VIOLATION && er->NumberParameters >= 2)
+        c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
+    regs_of(ep->ContextRecord, &c);
+    void *base = NULL;
+    RtlPcToFileHeader((void *)rip, &base);
+    uintptr_t exe = (uintptr_t)GetModuleHandleW(NULL);
+    c.offset = rip - (uintptr_t)base;
+    if (!base) c.module = "";
+    else if ((uintptr_t)base != exe) c.module = image_name(base);
+    if (c.module) frames_of(ep->ContextRecord, &c);
+    if (code == 0xe06d7363u) cxx_info(er, &c);
+    crash_fn(&c);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static void abort_signal(int sig) { crash_from_runtime("abort", (uint32_t)sig); }
 
 static void invalid_parameter(const wchar_t *expr, const wchar_t *func, const wchar_t *file, unsigned line,
@@ -681,97 +933,12 @@ static void invalid_parameter(const wchar_t *expr, const wchar_t *func, const wc
     crash_from_runtime("invalid parameter to a C runtime function", 0xc0000417u);   // STATUS_INVALID_CRUNTIME_PARAMETER
 }
 
-static const char *exception_name(DWORD code) {
-    switch (code) {
-    case EXCEPTION_ACCESS_VIOLATION: return "access violation";
-    case EXCEPTION_IN_PAGE_ERROR: return "in-page error";
-    case EXCEPTION_ILLEGAL_INSTRUCTION: return "illegal instruction";
-    case EXCEPTION_PRIV_INSTRUCTION: return "privileged instruction";
-    case EXCEPTION_INT_DIVIDE_BY_ZERO: return "integer division by zero";
-    case EXCEPTION_STACK_OVERFLOW: return "stack overflow";
-    case EXCEPTION_BREAKPOINT: return "breakpoint";
-    case EXCEPTION_DATATYPE_MISALIGNMENT: return "misaligned data";
-    case EXCEPTION_NONCONTINUABLE_EXCEPTION: return "non-continuable exception";
-    case 0xc0000374u: return "heap corruption";        // STATUS_HEAP_CORRUPTION, raised by ntdll's heap checks
-    case 0xc0000420u: return "assertion failure";      // STATUS_ASSERTION_FAILURE
-    case 0xe06d7363u: return "C++ exception";          // what an MSVC-built module's throw raises
-    default: return "exception";
-    }
-}
-
-// Return addresses inside this executable on the faulting thread's stack, innermost first, from a copy of the faulting
-// context unwound with each module's x64 unwind data (RtlVirtualUnwind); a function without unwind data is a leaf
-// whose return address is at rsp. Stops at max addresses, after 64 frames, or at a stack pointer outside the thread's
-// stack (a fiber's when the thread runs one: SwitchToFiber moves the thread's stack limits with it).
-static int exe_frames(const CONTEXT *fault, uintptr_t *out, int max) {
-    MODULEINFO mi;
-    if (!GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(NULL), &mi, sizeof mi)) return 0;
-    ULONG_PTR low = 0, high = 0;
-    GetCurrentThreadStackLimits(&low, &high);
-    uintptr_t base = (uintptr_t)mi.lpBaseOfDll;
-    CONTEXT c = *fault;
-    int n = 0;
-    for (int depth = 0; depth < 64 && n < max && c.Rip; depth++) {
-        if (c.Rsp < low || c.Rsp + 8 > high) break;
-        if (c.Rip - base < mi.SizeOfImage) out[n++] = (uintptr_t)c.Rip;
-        DWORD64 image = 0;
-        PRUNTIME_FUNCTION f = RtlLookupFunctionEntry(c.Rip, &image, NULL);
-        if (f) {
-            PVOID data;
-            DWORD64 frame;
-            RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, f, &c, &data, &frame, NULL);
-        } else {
-            c.Rip = *(const DWORD64 *)(uintptr_t)c.Rsp;
-            c.Rsp += 8;
-        }
-    }
-    return n;
-}
-
-// Last chance for an exception that no handler took, in any module. crash_veh reports first-chance faults only in this
-// executable's code, because another module may handle its own exceptions (a driver probing memory under SEH); one
-// that nobody took ends the process, and an access violation inside the GPU driver, ntdll's heap corruption check or a
-// C++ exception a driver threw ended it with no report at all: the log stopped mid-game. A crash inside this report
-// (the unwinder reading a broken stack) comes back here and goes to the previous filter, the C runtime's.
-static LPTOP_LEVEL_EXCEPTION_FILTER prev_filter;
-
-static LONG WINAPI crash_filter(EXCEPTION_POINTERS *ep) {
-    static volatile LONG busy;
-    if (!crash_fn || InterlockedExchange(&busy, 1)) return prev_filter ? prev_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
-    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
-    DWORD code = er->ExceptionCode;
-    uintptr_t rip = (uintptr_t)er->ExceptionAddress, base = 0;
-    // The module's name, in static buffers rather than plat_module_of's stack ones: after a stack overflow only a few
-    // KiB of stack are left. One report at a time (busy), so they are not shared.
-    static wchar_t wpath[MAX_PATH];
-    static char module[MAX_PATH * 3];
-    HMODULE m = NULL;
-    module[0] = 0;
-    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                           (LPCWSTR)rip, &m) && m) {
-        base = (uintptr_t)m;
-        if (GetModuleFileNameW(m, wpath, MAX_PATH)) {
-            const wchar_t *n = wcsrchr(wpath, L'\\') ? wcsrchr(wpath, L'\\') + 1 : wpath;
-            if (!WideCharToMultiByte(CP_UTF8, 0, n, -1, module, sizeof module, NULL, NULL)) module[0] = 0;
-        }
-        if (!module[0]) strcpy(module, "?");
-    }
-    PlatCrash c = {exception_name(code), (uint32_t)code, rip, base ? rip - base : rip, -1, 0};
-    if (base != (uintptr_t)GetModuleHandleW(NULL)) c.module = module;
-    if ((code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_IN_PAGE_ERROR) && er->NumberParameters >= 2)
-        c.access = (int)er->ExceptionInformation[0], c.addr = er->ExceptionInformation[1];
-    // A stack overflow leaves too little stack for the CONTEXT copy the unwinding takes
-    if (code != EXCEPTION_STACK_OVERFLOW) c.nframes = exe_frames(ep->ContextRecord, c.frames, 16);
-    crash_fn(&c);   // ends the process
-    return EXCEPTION_EXECUTE_HANDLER;
-}
-
 void plat_crash_hook(void (*fn)(const PlatCrash *c)) {
     crash_fn = fn;
     AddVectoredExceptionHandler(0, crash_veh);
+    SetUnhandledExceptionFilter(crash_filter);   // replaces the C runtime's filter; crash_fn never returns
     signal(SIGABRT, abort_signal);
     _set_invalid_parameter_handler(invalid_parameter);
-    prev_filter = SetUnhandledExceptionFilter(crash_filter);
 }
 
 // A fresh process gets a fresh layout: Windows places DLLs, heaps and thread stacks at random addresses. The parent
@@ -1421,6 +1588,27 @@ void *plat_lib_open(const char *name) {
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
 
+void plat_lib_error(char *out, size_t cap) { snprintf(out, cap, "error %lu", GetLastError()); }
+
+int plat_ngx_core_path(char *out, size_t cap) {
+    wchar_t dir[WPATH];
+    DWORD n = sizeof dir;
+    char d[PLAT_PATH_MAX];
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\NVIDIA Corporation\\Global\\NGXCore", L"FullPath", RRF_RT_REG_SZ,
+                     NULL, dir, &n) != ERROR_SUCCESS ||
+        !WideCharToMultiByte(CP_UTF8, 0, dir, -1, d, (int)sizeof d, NULL, NULL))
+        return 0;
+    return snprintf(out, cap, "%s\\_nvngx.dll", d) < (int)cap;
+}
+
+int plat_exe_dir_wide(wchar_t *out, size_t cap) {
+    DWORD len = GetModuleFileNameW(NULL, out, (DWORD)cap);
+    if (!len || len >= cap) return 0;
+    while (len && out[len - 1] != L'\\' && out[len - 1] != L'/') len--;
+    out[len] = 0;
+    return len != 0;
+}
+
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.
 
@@ -1613,9 +1801,10 @@ void plat_commit_info(double *proc_mb, double *used_mb, double *limit_mb) {
         *proc_mb = (double)(pmc.PrivateUsage >> 20);
 }
 
-double plat_mem_room_mb(void) {
+void plat_mem_room(uint64_t *commit_room, uint64_t *phys_room) {
+    *commit_room = *phys_room = UINT64_MAX;
     MEMORYSTATUSEX ms = {.dwLength = sizeof ms};
-    return GlobalMemoryStatusEx(&ms) ? (double)(ms.ullAvailPageFile >> 20) : -1;   // the commit limit minus the charge
+    if (GlobalMemoryStatusEx(&ms)) *commit_room = ms.ullAvailPageFile, *phys_room = ms.ullAvailPhys;
 }
 
 void plat_process_memory(uint64_t *resident, uint64_t *private_bytes) {

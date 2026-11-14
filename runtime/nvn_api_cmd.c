@@ -148,6 +148,7 @@ static void *realloc_wait(void *old, size_t n, const char *what) {
     if (p) return p;
     pool_drain();
     big_drain();
+    rt_oom_request();   // the Vulkan back end gives memory back at its next submit (oom.c)
     static uint32_t reports;
     int report = __atomic_fetch_add(&reports, 1, __ATOMIC_RELAXED) < 8;
     if (report) {
@@ -417,53 +418,6 @@ _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
 static PlatMutex copy_lock = PLAT_MUTEX_INIT;    // guards the two maps, the counters and every prefix
-// Recording copies are allocated and freed every frame, often over a MiB each. Under Wine an allocation that large is
-// its own mapping (NtAllocateVirtualMemory, munmap at the free), so each frame faulted in and zeroed fresh pages:
-// 7.5% of the game threads' time on a Ryzen Z1, the copy into them half of it. Freed blocks of 64 KiB or more are kept
-// (BLK_KEEP of them, BLK_KEEP_BYTES in all) and reused for a request they fit within twice its size.
-// ponytail: a linear search of 32 entries; a size-class list if the count needs to grow.
-#define BLK_MIN (64u << 10)
-#define BLK_KEEP 32
-#define BLK_KEEP_BYTES (256ull << 20)
-typedef struct { uint64_t cap, pad; } blk_hdr;   // 16 bytes: what follows keeps malloc's alignment
-static blk_hdr *blk_kept[BLK_KEEP];
-static int nblk_kept;
-static uint64_t blk_kept_bytes;
-static PlatMutex blk_lock = PLAT_MUTEX_INIT;
-
-// wait: a new block comes from realloc_wait (never with a lock held); otherwise from malloc.
-static void *blk_alloc(size_t n, int wait) {
-    blk_hdr *h = NULL;
-    if (n >= BLK_MIN) {
-        plat_mutex_lock(&blk_lock);
-        int best = -1;
-        for (int i = 0; i < nblk_kept; i++)
-            if (blk_kept[i]->cap >= n && blk_kept[i]->cap / 2 <= n && (best < 0 || blk_kept[i]->cap < blk_kept[best]->cap))
-                best = i;
-        if (best >= 0) h = blk_kept[best], blk_kept[best] = blk_kept[--nblk_kept], blk_kept_bytes -= h->cap;
-        plat_mutex_unlock(&blk_lock);
-    }
-    if (!h) {
-        size_t cap = n >= BLK_MIN ? (n + BLK_MIN - 1) & ~(size_t)(BLK_MIN - 1) : n;
-        if (!(h = wait ? realloc_wait(NULL, sizeof *h + cap, "command copy") : malloc(sizeof *h + cap))) return NULL;
-        h->cap = cap;
-    }
-    return h + 1;
-}
-
-static void blk_free(void *p) {
-    if (!p) return;
-    blk_hdr *h = (blk_hdr *)p - 1;
-    if (h->cap >= BLK_MIN) {
-        plat_mutex_lock(&blk_lock);
-        int keep = nblk_kept < BLK_KEEP && blk_kept_bytes + h->cap <= BLK_KEEP_BYTES;
-        if (keep) blk_kept[nblk_kept++] = h, blk_kept_bytes += h->cap;
-        plat_mutex_unlock(&blk_lock);
-        if (keep) return;
-    }
-    free(h);
-}
-
 static nvn_hmap copy_pages = {.klen = 8};   // page -> copy_bucket
 static nvn_hmap copy_live = {.klen = 8};    // handle -> copy_prefix of a live copy
 static uint64_t ncopies, copy_bytes, copies_made;

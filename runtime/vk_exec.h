@@ -196,7 +196,6 @@ void vk_exec_inline_end(int reopen);
 // vk_exec_draw.c: forget what the command buffer being recorded has bound (pipeline, sets, dynamic state, vertex
 // buffers): the replay continues in a new one (vk_sync_split).
 void vk_exec_draw_new_cb(VkExec *ex);
-void vk_exec_mem_barrier(VkExec *ex);   // a full memory barrier alone, no layout change (vk_exec.c)
 // The recording threads of the chunked replay as this run read TOTK_REPLAY_WORKERS (0 off), -1 before the first
 // submission read it (the settings menu shows it).
 int vk_exec_replay_workers(void);
@@ -226,6 +225,11 @@ extern VkExecFrame vk_exec_frame;
 void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu_written: t rendered or copied into
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0
 uint32_t vk_exec_replay_pos(void);                             // the op this thread records in a chunk, else UINT32_MAX
+// A chunk that is about to make a texture entry whose content depends on the textures at its storage (vk_texture.c
+// entry_of): whether a chunk before it is still being recorded, and the wait until none is. The caller holds no lock
+// but the texture lock, which it releases for the wait.
+int vk_exec_chunk_behind(void);
+void vk_exec_chunk_settle(void);
 void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
 
 // TOTK_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage

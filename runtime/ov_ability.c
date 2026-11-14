@@ -15,7 +15,7 @@
 #endif
 
 #ifdef RT_PATCH_PAGE
-#define HOST_ABILITY (RT_PATCH_PAGE + 0xf70)   // below the mouse hooks, which end at +0xf80
+#define HOST_ABILITY (RT_PATCH_PAGE + 0xf60)   // below the mouse hooks, which start at +0xf70
 
 // Our guest heap lies below 0x800000000 (memory.c LOW_SEARCH_FROM), so UltraTears' window bounds would reject live
 // actors; the pages are asked instead (a system call, on a path that runs a few times a minute).

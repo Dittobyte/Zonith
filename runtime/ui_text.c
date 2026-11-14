@@ -71,6 +71,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Size of the 3D scene relative to the game resolution; the game's FSR scales it to "
                                   "that size. Above 100 % smooths jagged edges (supersampling) at a high GPU cost.",
     [UI_MENU_RENDER_SCALE_GAME] = "Game (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Dynamic resolution",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Lets the game lower the 3D scene to 90 or 80 %. It judges by an estimate made for the Switch that ignores your GPU, so wide scenes drop even on a fast PC. Off keeps the render scale.",
     [UI_MENU_UPSCALER] = "Scaling to the window",
     [UI_MENU_UPSCALER_DESC] = "How the picture is scaled when the window is larger than the game resolution. FSR keeps "
                               "edges and detail sharper than bilinear.",
@@ -183,6 +185,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HEROPATH_REALTIME_DESC] = "Steps the map's Hero's Path replay by real time as well.",
     [UI_MENU_HIGHFPS_FIX] = "High frame rate fixes",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrects physics that misbehave above 30 frames per second, and objects that stay see-through or invisible above 60.",
+    [UI_MENU_CLIMB_FIX] = "Climbing speed fix",
+    [UI_MENU_CLIMB_FIX_DESC] = "Keeps climbing walls and ladders at full speed above 60 frames per second, so Link reaches the top.",
     [UI_MENU_GAME_LANG] = "Game language", [UI_MENU_GAME_LANG_DESC] = "Language of the game's text and voices.",
     [UI_MENU_GAME_LANG_AUTO] = "Automatic",
     [UI_MENU_OPERATION_MODE] = "Console mode",
@@ -262,7 +266,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "off at a game resolution not 16:9",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "off at this game resolution (no layout made for it)",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
     [UI_MENU_RESTART] = "Restart now",
@@ -442,7 +446,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Forces dynamic vertex input on or off; the default depends on the GPU.",
     [UI_MENU_VK_DYN_A2C] = "Dynamic alpha to coverage",
     [UI_MENU_VK_DYN_A2C_DESC] = "Forces dynamic alpha to coverage on or off. Default: off on AMD's driver for RDNA 2 and "
-                                "older, which draws characters black with it, on elsewhere.",
+                                "older, which draws characters black with it, and on Intel's Windows driver for "
+                                "integrated GPUs, which draws coloured noise on foliage; on elsewhere.",
     [UI_MENU_VK_SUBGROUP_PIN] = "Pin subgroup size", [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Fixes the shader subgroup size.",
     [UI_MENU_VK_RECORDER] = "Vulkan recorder thread",
     [UI_MENU_VK_RECORDER_DESC] = "Records the replay's Vulkan commands on a thread of their own. Auto: on, except on AMD GPUs outside Proton/Wine. Off is the stable choice on AMD.",
@@ -556,6 +561,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_RENDER_SCALE_DESC] = "Размер 3D-сцены относительно разрешения игры; FSR игры доводит её до этого размера. "
                                   "Выше 100 % сглаживает лесенки на краях (суперсэмплинг) ценой большой нагрузки на GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Как в игре (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Динамическое разрешение",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Игра снижает 3D-сцену до 90 или 80 %. Она судит по оценке для Switch, не учитывающей вашу видеокарту, поэтому широкие сцены снижаются даже на быстром ПК. Выключено: остаётся масштаб отрисовки.",
     [UI_MENU_UPSCALER] = "Масштабирование под окно",
     [UI_MENU_UPSCALER_DESC] = "Как картинка растягивается, когда окно больше разрешения игры. FSR сохраняет края и "
                               "детали чётче билинейного.",
@@ -668,6 +675,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HEROPATH_REALTIME_DESC] = "Повтор «Пути героя» на карте тоже идёт по реальному времени.",
     [UI_MENU_HIGHFPS_FIX] = "Исправления для высокого FPS",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Исправляет физику, которая ломается при частоте выше 30 кадров в секунду, и объекты, которые выше 60 остаются полупрозрачными или невидимыми.",
+    [UI_MENU_CLIMB_FIX] = "Исправление скорости лазания",
+    [UI_MENU_CLIMB_FIX_DESC] = "Сохраняет нормальную скорость лазания по стенам и лестницам выше 60 кадров в секунду, чтобы Линк добирался до верха.",
     [UI_MENU_GAME_LANG] = "Язык игры", [UI_MENU_GAME_LANG_DESC] = "Язык текста и озвучки игры.",
     [UI_MENU_GAME_LANG_AUTO] = "Автоматически",
     [UI_MENU_OPERATION_MODE] = "Режим консоли",
@@ -745,7 +754,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при разрешении игры не 16:9",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при этом разрешении игры (для него нет раскладки)",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
     [UI_MENU_RESTART] = "Перезапустить сейчас",
@@ -929,8 +938,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Принудительно включает или выключает динамический ввод вершин; по умолчанию зависит от GPU.",
     [UI_MENU_VK_DYN_A2C] = "Динамический alpha to coverage",
     [UI_MENU_VK_DYN_A2C_DESC] = "Принудительно включает или выключает динамический alpha to coverage. По умолчанию "
-                                "выключен на драйвере AMD для RDNA 2 и старше, где с ним персонажи чёрные, и включён "
-                                "на остальных.",
+                                "выключен на драйвере AMD для RDNA 2 и старше, где с ним персонажи чёрные, и на "
+                                "драйвере Intel для Windows на встроенных GPU, где с ним цветной шум на листве; "
+                                "включён на остальных.",
     [UI_MENU_VK_SUBGROUP_PIN] = "Фиксировать размер подгруппы",
     [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Фиксирует размер подгруппы шейдера.",
     [UI_MENU_VK_RECORDER] = "Поток записи Vulkan",
@@ -1080,6 +1090,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                   "tamanho. Acima de 100 % suaviza bordas serrilhadas (supersampling) com alto custo de "
                                   "GPU.",
     [UI_MENU_RENDER_SCALE_GAME] = "Jogo (83 %)",
+    [UI_MENU_DYNAMIC_RES] = "Resolução dinâmica",
+    [UI_MENU_DYNAMIC_RES_DESC] = "Deixa o jogo reduzir a cena 3D para 90 ou 80 %. Ele decide por uma estimativa feita para o Switch que ignora sua GPU, então cenas largas caem mesmo num PC rápido. Desligada, mantém a escala da renderização.",
     [UI_MENU_UPSCALER] = "Escala para a janela",
     [UI_MENU_UPSCALER_DESC] = "Como a imagem é ampliada quando a janela é maior que a resolução do jogo. O FSR mantém "
                               "bordas e detalhes mais nítidos que o bilinear.",
@@ -1117,6 +1129,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HEROPATH_REALTIME_DESC] = "Avança a repetição do Caminho do Herói no mapa pelo tempo real também.",
     [UI_MENU_HIGHFPS_FIX] = "Correções para alta taxa de quadros",
     [UI_MENU_HIGHFPS_FIX_DESC] = "Corrige a física que se comporta mal acima de 30 quadros por segundo e objetos que ficam transparentes ou invisíveis acima de 60.",
+    [UI_MENU_CLIMB_FIX] = "Correção da velocidade de escalada",
+    [UI_MENU_CLIMB_FIX_DESC] = "Mantém a escalada de paredes e escadas na velocidade normal acima de 60 quadros por segundo, para que Link chegue ao topo.",
     [UI_MENU_GAME_LANG] = "Idioma do jogo", [UI_MENU_GAME_LANG_DESC] = "Idioma dos textos e das vozes do jogo.",
     [UI_MENU_GAME_LANG_AUTO] = "Automático",
     [UI_MENU_OPERATION_MODE] = "Modo do console",
@@ -1124,6 +1138,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODE_DOCKED] = "Modo TV", [UI_MENU_MODE_HANDHELD] = "Modo portátil",
 
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Volume geral do jogo.",
+    [UI_MENU_AUDIO_CHANNELS] = "Alto-falantes",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "Saída estéreo ou surround 5.1. Automático escolhe 5.1 quando a configuração de "
+                                    "alto-falantes do Windows tem seis canais ou mais. Vale após reiniciar.",
+    [UI_MENU_CHANNELS_AUTO] = "Automático", [UI_MENU_CHANNELS_STEREO] = "Estéreo", [UI_MENU_CHANNELS_51] = "Surround 5.1",
 
     [UI_MENU_MOTION] = "Controles de movimento", [UI_MENU_MOTION_DESC] = "Mirar com o giroscópio do controle.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
@@ -1311,7 +1329,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "Força a entrada dinâmica de vértices ligada ou desligada; o padrão depende da GPU.",
     [UI_MENU_VK_DYN_A2C] = "Alpha to coverage dinâmico",
     [UI_MENU_VK_DYN_A2C_DESC] = "Força o alpha to coverage dinâmico ligado ou desligado. Padrão: desligado no driver da AMD "
-                                "para RDNA 2 e anteriores, que com ele desenha os personagens pretos, ligado nos demais.",
+                                "para RDNA 2 e anteriores, que com ele desenha os personagens pretos, e no driver da "
+                                "Intel para Windows em GPUs integradas, que desenha ruído colorido na folhagem; "
+                                "ligado nos demais.",
     [UI_MENU_VK_SUBGROUP_PIN] = "Fixar tamanho do subgrupo",
     [UI_MENU_VK_SUBGROUP_PIN_DESC] = "Fixa o tamanho do subgrupo dos shaders.",
     [UI_MENU_TRACE] = "Registro de desempenho", [UI_MENU_TRACE_DESC] = "Grava os tempos de quadro num arquivo.",
@@ -1417,7 +1437,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados numa resolução de jogo que não é 16:9",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados nesta resolução de jogo (sem layout feito para ela)",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
     [UI_MENU_RESTART] = "Reiniciar agora",
@@ -1603,6 +1623,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                   "游戏的 FSR 会将其缩放到该尺寸。"
                                   "高于 100% 会平滑锯齿边缘（超采样），但 GPU 开销很高。",
     [UI_MENU_RENDER_SCALE_GAME] = "游戏（83%）",
+    [UI_MENU_DYNAMIC_RES] = "动态分辨率",
+    [UI_MENU_DYNAMIC_RES_DESC] = "让游戏把 3D 场景降到 90 % 或 80 %。它依据为 Switch 制定的估算，不考虑你的显卡，因此即使在高性能 PC 上宽场景也会降低。关闭时保持渲染比例。",
     [UI_MENU_UPSCALER] = "放大到窗口",
     [UI_MENU_UPSCALER_DESC] = "窗口大于游戏分辨率时画面的放大方式。"
                               "FSR 比双线性更能保留边缘和细节。",
@@ -1662,6 +1684,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HIGHFPS_FIX] = "高帧率修正",
     [UI_MENU_HIGHFPS_FIX_DESC] = "修正帧率高于 30 时出现异常的物理效果，"
                                  "以及帧率高于 60 时一直半透明或不可见的物体。",
+    [UI_MENU_CLIMB_FIX] = "攀爬速度修正",
+    [UI_MENU_CLIMB_FIX_DESC] = "帧率高于 60 时让攀爬墙壁和梯子保持正常速度，林克能爬到顶。",
     [UI_MENU_GAME_LANG] = "游戏语言",
     [UI_MENU_GAME_LANG_DESC] = "游戏文本和语音的语言。",
     [UI_MENU_GAME_LANG_AUTO] = "自动",
@@ -1676,6 +1700,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                   "这样被打断的读取可能会永久卡住。",
     [UI_MENU_VOLUME] = "音量",
     [UI_MENU_VOLUME_DESC] = "游戏的主音量。",
+    [UI_MENU_AUDIO_CHANNELS] = "扬声器",
+    [UI_MENU_AUDIO_CHANNELS_DESC] = "立体声或 5.1 环绕声输出。选择自动时，若 Windows 扬声器设置有六个或更多声道则使用 5.1。重启后生效。",
+    [UI_MENU_CHANNELS_AUTO] = "自动", [UI_MENU_CHANNELS_STEREO] = "立体声", [UI_MENU_CHANNELS_51] = "5.1 环绕声",
     [UI_MENU_MOTION] = "体感操作",
     [UI_MENU_MOTION_DESC] = "用手柄的陀螺仪瞄准。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
@@ -1943,7 +1970,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_VK_DYN_VERTEX_DESC] = "强制开关动态顶点输入；默认值取决于显卡。",
     [UI_MENU_VK_DYN_A2C] = "动态 Alpha 覆盖",
     [UI_MENU_VK_DYN_A2C_DESC] = "强制开关动态 Alpha 覆盖。默认：AMD RDNA 2 及更早的驱动上为关闭，"
-                                "开启会导致人物变黑；其他显卡上为开启。",
+                                "开启会导致人物变黑；Intel 集成显卡的 Windows 驱动上也为关闭，开启会使植被出现彩色噪点；"
+                                "其他显卡上为开启。",
     [UI_MENU_VK_SUBGROUP_PIN] = "固定子群大小",
     [UI_MENU_VK_SUBGROUP_PIN_DESC] = "固定着色器的子群大小。",
     [UI_MENU_TRACE] = "性能日志",
@@ -2040,7 +2068,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
     [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",
-    [UI_MENU_PROMPTS_OFF_SHAPE] = "游戏分辨率不是 16:9 时关闭",
+    [UI_MENU_PROMPTS_OFF_SHAPE] = "此游戏分辨率下关闭（未为其制作布局）",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
     [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",
     [UI_MENU_RESTART] = "立即重启",

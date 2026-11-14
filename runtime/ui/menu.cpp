@@ -59,6 +59,7 @@ extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 int playtime_get(uint64_t *total_s, uint64_t *session_s);   // playtime.c
+bool amiibo_check_font_rebuild(void);  // ui/amiibo_page.cpp; check and clear font rebuild request
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -354,6 +355,9 @@ static int fonts_up(float scale) {
             if (const CheatInfo *ci = cheats_info(k); ci && ci->name) b.AddText(ci->name);
         for (int k = 0; k < mods_count(); k++)
             if (const ModInfo *mi = mods_at(k); mi) b.AddText(mi->name);
+        // Add amiibo filenames so they display correctly in the menu
+        amiibo_collect_filenames(add_row_glyphs, &b);
+        
         b.BuildRanges(&ranges[i]);
         ImFontConfig mc;
         mc.MergeMode = true;
@@ -670,6 +674,7 @@ static void tab_screen(float scale) {
     opt_group(UI_MENU_GRAPHICS);
     row_output_res();
     row_render_scale();
+    opt_toggle("TOTK_DYNAMIC_RES", UI_MENU_DYNAMIC_RES, UI_MENU_DYNAMIC_RES_DESC);
     row_shadow_res();
     static const UiTextId up[] = {UI_MENU_UPSCALER_FSR, UI_MENU_UPSCALER_BILINEAR};
     opt_choice("TOTK_UPSCALER", UI_MENU_UPSCALER, up, 2, UI_MENU_UPSCALER_DESC);
@@ -798,8 +803,8 @@ static const char *prompts_note(bool *restart) {
     const char *layout = cfg_value("TOTK_PAD_LAYOUT"), *used = romfs_prompts();
     const char *want = input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout);
     if (want == used || (want && used && !strcmp(want, used))) return nullptr;
-    // A game resolution of another shape needs a folder of its own for the PC prompts (romfs-patches-pc-<w>x<h>), which
-    // the setup does not write: the shape is the reason then, not the setup.
+    // A game resolution of another shape needs a folder of its own for the prompts (<folder>-<w>x<h>). The setup writes
+    // one for each size the Screen tab offers; at any other size the shape is the reason, not the setup.
     int off = romfs_prompts_off(want);
     if (want && !romfs_prompts_ready(want) && off != ROMFS_PROMPTS_SHAPE) return menu_text(UI_MENU_PROMPTS_MISSING);
     switch (off) {
@@ -1109,6 +1114,7 @@ static void mods_builtin_rows(void) {
     opt_toggle("TOTK_CLOTH_REALTIME", UI_MENU_CLOTH_REALTIME, UI_MENU_CLOTH_REALTIME_DESC);
     opt_toggle("TOTK_HEROPATH_REALTIME", UI_MENU_HEROPATH_REALTIME, UI_MENU_HEROPATH_REALTIME_DESC);
     opt_toggle("TOTK_HIGHFPS_FIX", UI_MENU_HIGHFPS_FIX, UI_MENU_HIGHFPS_FIX_DESC);
+    opt_toggle("TOTK_CLIMB_FIX", UI_MENU_CLIMB_FIX, UI_MENU_CLIMB_FIX_DESC);
     opt_button("##mods_quickmenu", UI_MENU_MODS_QUICKMENU, UI_MENU_MODS_QUICKMENU_DESC,
                menu_text(romfs_patches_loaded() ? UI_MENU_ON : UI_MENU_OFF));
 }
@@ -1564,7 +1570,9 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     uint64_t t0 = plat_now_ns();
     if (!g_ctx_ok) make_context();
     float scale = menu_scale(t->height);
-    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale))) {
+    // Check if amiibo page requested font rebuild (e.g., after refreshing directory with new files)
+    bool amiibo_rebuild = amiibo_check_font_rebuild();
+    if (!vk_up(t) || (g_font_scale != scale && !fonts_up(scale)) || (amiibo_rebuild && !fonts_up(scale))) {
         rt_log("menu: Dear ImGui Vulkan back end set-up failed; the menu stays closed");
         g_failed.store(1);
         set_open(0);
