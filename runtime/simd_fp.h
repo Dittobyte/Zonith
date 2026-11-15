@@ -223,13 +223,36 @@ SI T FN(op)(Cpu *c, int op, T a, T b, T d) {
     return r;
 }
 
+SI VTU FN(vsel)(VTS m, VTU x, VTU y) { return (x & (VTU)m) | (y & ~(VTU)m); }
+
+// Out-of-line path of vop. TotK sends vectors with a NaN lane here constantly, so for the ops whose NaN result is
+// FPProcessNaN of the operands alone (ADD, SUB, MUL, NMUL, DIV, ABD, SQRT) the NaN lanes are fixed with vector masks
+// instead of one scalar FN(op) per lane: under FPCR.DN the default NaN; else the first signalling NaN of a then b
+// (quietened), else the first quiet NaN, else (an invalid op such as inf-inf or 0/0) the default NaN, as FN(nan2) picks
+// it; NMUL negates it, ABD clears its sign. Flushing under FZ does not change which operand is a NaN, and the other
+// lanes keep the host result, which FN(op) would return unchanged, except a +-smallest-normal result under FZ (the
+// tininess recheck of FN(slow)): a vector with such a lane, a directed RMode or another op goes lane by lane.
+// The inlined vop is untouched, so the game functions' shape and PGO profile stay as they were.
 SN VT FN(vslow)(Cpu *c, int op, VT a, VT b, VT d) {
     VT r;
+    if (!(c->fpcr & FPCR_RM) && op <= FOP_SQRT && op != FOP_MULX) {
+        r = FCALC(op, a, b, d, VK, FMA_V);
+        if (!(c->fpcr & FPCR_FZ) || !__builtin_reduce_or(__builtin_elementwise_abs(r) == FN(fv)(MINN))) {
+            const VTU sgn = (VTU){} + SGN, qb = (VTU){} + QB, dnan = (VTU){} + DNAN;
+            VTU x = (VTU)a, y = op == FOP_SQRT ? (VTU){} : (VTU)b, nan = dnan;
+            if (!(c->fpcr & FPCR_DN)) {
+                VTS na = (x & ~sgn) > (VTU){} + EXPM, nb = (y & ~sgn) > (VTU){} + EXPM;
+                VTS take_a = na & ~(nb & ((y & qb) == 0) & ((x & qb) != 0)); // a, unless only b is signalling
+                nan = FN(vsel)(take_a, x | qb, FN(vsel)(nb, y | qb, dnan));
+            }
+            if (op == FOP_NMUL) nan ^= sgn;
+            if (op == FOP_ABD) nan &= ~sgn;
+            return (VT)FN(vsel)(r != r, nan, (VTU)r);
+        }
+    }
     for (int i = 0; i < NL; i++) r[i] = FN(op)(c, op, a[i], b[i], d[i]);
     return r;
 }
-
-SI VTU FN(vsel)(VTS m, VTU x, VTU y) { return (x & (VTU)m) | (y & ~(VTU)m); }
 
 SI VT FN(vflush)(VT a) {
     VTU u = (VTU)a;

@@ -1761,6 +1761,15 @@ static void feedback_barrier(VkExec *ex) {
     ex->fr.fb_barriers++;
 }
 
+// 1 when shader s stores to a storage buffer or an image: writes a held game barrier would leave unordered.
+static int shader_stores(const GfxShader *s) {
+    const GfxShaderRes *r;
+    if (!s) return 0;
+    for (int i = 0, n = gfx_shader_resources(s, GFX_RES_SSBO, &r); i < n; i++)
+        if (r[i].flags & 1) return 1;
+    return gfx_shader_resources(s, GFX_RES_IMG, &r) > 0;
+}
+
 // Marks the attachments the draw with state s writes: colour targets with a nonzero effective write mask, depth with
 // depth writes or the stencil test on.
 static void feedback_written(VkExec *ex, const VkPipeState *s) {
@@ -3075,6 +3084,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     bind_resources(ex, info);
     if (fbl & ex->fb_dirty) feedback_barrier(ex);
     feedback_written(ex, &s);
+    if (!ex->pass_stored) ex->pass_stored = (uint8_t)(shader_stores(vs) || shader_stores(fs));   // vk_exec_game_barrier
     bind_vertex_buffers(ex);
     if (vk_dump_armed) vk_dump_draw(ex, &s, p, info);
     if (vk_hdr_track) vk_hdr_draw(ex, info);

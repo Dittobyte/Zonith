@@ -90,13 +90,13 @@ void vk_exec_frame_log(const tex_t *p, uint64_t frame) {
                                   fw[i].h, fw[i].fmt, fw[i].n);
     }
     rt_log("frame %llu: submits %llu passes %llu draws %llu/%llu clears %llu copies %llu dispatches %llu; present %p "
-           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; targets%s",
+           "%ux%u/%#x written %d; feedback draws %llu barriers %llu restarts %llu layouts %llu; held barriers %llu; targets%s",
            (unsigned long long)frame, (unsigned long long)f->submits,
            (unsigned long long)f->passes, (unsigned long long)f->draws, (unsigned long long)f->draws_seen,
            (unsigned long long)f->clears, (unsigned long long)f->copies, (unsigned long long)f->dispatches,
            p ? (const void *)p->mem : NULL, p ? p->d.width : 0, p ? p->d.height : 0, p ? (uint32_t)p->d.format : 0,
            hit, (unsigned long long)f->fb_draws, (unsigned long long)f->fb_barriers, (unsigned long long)f->fb_restarts,
-           (unsigned long long)f->fb_layouts, list);
+           (unsigned long long)f->fb_layouts, (unsigned long long)f->held_barriers, list);
     memset(f, 0, sizeof *f);
     nfw = 0;
 }
@@ -615,6 +615,7 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
 // Full barrier. The images in the feedback layout become want[] (pass begin) or none (every other barrier): the others
 // go back to GENERAL and the new ones leave it, in the same command.
 static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags *wasp, int nwant) {
+    ex->barrier_held = 0;   // this full barrier is the held one too
     vk_exec_pass_end(ex);
     vk_exec_ub_flush(ex);   // uniform updates overlaid in the pass reach their buffers before the barrier below
     VkImageMemoryBarrier2 ib[18];
@@ -642,6 +643,30 @@ static void barrier_to(VkExec *ex, const VkImage *want, const VkImageAspectFlags
 }
 
 void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
+
+// nvnCommandBufferBarrier. TotK puts one with ORDER_FRAGMENTS | INVALIDATE_TEXTURE after each G-buffer decal, which
+// samples the target pixel it draws into, so ending the pass at each of them splits the G-buffer into hundreds of passes
+// with a full GPU drain between them (UltraTears measured ~900 a frame in a shrine). Inside a pass the barrier only has
+// to make earlier writes visible to later reads, and the reads a pass can make of its own writes are already ordered
+// without it: a draw that samples an attachment written since the pass began gets the by-region barrier or the pass
+// restart of feedback_prepare (vk_exec_draw.c), since fb_dirty keeps accumulating across a held barrier. Everything
+// else a draw reads was written before the pass began. So a barrier that only orders primitives or fragments and
+// invalidates the texture cache is held while the pass stays open and made when it ends, unless a draw of the pass
+// stored to a buffer or image (those writes have no tracking) or feedback handling is off. TOTK_HOLD_BARRIER=0: every
+// game barrier ends the pass, as before.
+void vk_exec_game_barrier(VkExec *ex, int bits) {
+    static int mode = -1;
+    if (mode < 0) mode = rt_knob("HOLD_BARRIER", "1");
+    const int in_pass_ok = NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_ORDER_FRAGMENTS_BIT |
+                           NVN_BARRIER_ORDER_FRAGMENTS_TILED_BIT | NVN_BARRIER_INVALIDATE_TEXTURE_BIT;
+    if (ex->in_pass && !ex->pass_stored && !(bits & ~in_pass_ok) && vk_ctx()->feedback != VK_FEEDBACK_OFF &&
+        RT_KNOB_ON(mode)) {
+        ex->barrier_held = 1;
+        ex->fr.held_barriers++;
+        return;
+    }
+    barrier_to(ex, NULL, NULL, 0);
+}
 
 void vk_exec_pass_begin(VkExec *ex) {
     if (ex->in_pass) return;
@@ -713,6 +738,7 @@ void vk_exec_pass_end(VkExec *ex) {
     vkCmdEndRendering(ex->cb);
     ex->recorded++;
     ex->in_pass = 0;
+    ex->pass_stored = 0;
     if (ex->mark) {
         // frame_add empties the context's counters at the end of a submission: then only the draws since it count
         uint64_t d = ex->fr.draws, d0 = ex->mark_draws0;
@@ -729,6 +755,7 @@ void vk_exec_pass_end(VkExec *ex) {
     for (int i = 0; i < 8; i++)
         if (ex->color[i].image) vk_texture_gpu_written(ex->color[i].tex), tfr_note(&ex->color[i], stamp);
     if (ex->depth.image) vk_texture_gpu_written(ex->depth.tex), tfr_note(&ex->depth, stamp);
+    if (ex->barrier_held) vk_exec_barrier(ex);   // a game barrier held inside the pass (vk_exec_game_barrier)
 }
 
 VkCommandBuffer vk_exec_inline_begin(int *reopen) {
@@ -1010,7 +1037,7 @@ static int walk(VkExec *ex, const op_hdr *h, int depth, const op_hdr *stop) {
         case OP_SET_RT: set_rt(ex, a); break;
         case OP_CLEAR_COLOR: clear_color(ex, a); break;
         case OP_CLEAR_DS: clear_ds(ex, a); break;
-        case OP_BARRIER: vk_exec_barrier(ex); break;
+        case OP_BARRIER: vk_exec_game_barrier(ex, ((const p_barrier *)a)->bits); break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
             if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) ex->fr.draws_seen++, ex->split_draws++;
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) ex->fr.dispatches++, ex->split_draws++;

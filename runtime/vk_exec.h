@@ -46,6 +46,7 @@ typedef struct {
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
+    uint64_t held_barriers;                                    // game barriers held inside a pass (vk_exec_game_barrier)
 } VkExecFrame;
 
 // A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan
@@ -135,6 +136,8 @@ typedef struct VkExec {
     void *views;                         // image views created for this command buffer (freed at its fence)
     int nviews, cap_views;
     int barrier_at;                      // recorded right after the last full barrier (-1: none yet)
+    uint8_t barrier_held;                // a game barrier inside the open pass, owed at its end (vk_exec_game_barrier)
+    uint8_t pass_stored;                 // a draw of the open pass stores to a buffer or image
 
     // Feedback loops (vk.h VkCtx.feedback, vk_exec_draw.c feedback_prepare). Learned targets are attached in
     // ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; they stay in it across consecutive passes and go back to GENERAL at the next
@@ -181,6 +184,7 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
+void vk_exec_game_barrier(VkExec *ex, int bits);   // OP_BARRIER: NVNbarrierBits
 // UpdateUniformBuffer overlays (vk_exec_draw.c): the copies into the real buffers that updates inside a pass left for
 // the next barrier (barrier_to records them first), and a GPU write of another kind into [addr, addr+n) of this
 // submission (a copy, a fill, a storage write), which retires the overlays it touches.
