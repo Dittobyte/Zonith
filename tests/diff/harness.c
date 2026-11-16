@@ -70,6 +70,7 @@ uint64_t rt_ticks(void) { return 0; }
 uint64_t rt_excl_gen;   // the exclusive monitor's store generation (runtime/cpu.h, main.c)
 volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0) { (void)addr; (void)lr; (void)x0; }
+void rt_fpcr_rmode(uint64_t fpcr, uint64_t lr) { (void)fpcr; (void)lr; }
 
 static void *map_at(uint64_t addr, size_t len) {
     len = (len + 0xffff) & ~(size_t)0xffff;

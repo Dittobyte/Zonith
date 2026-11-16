@@ -1064,7 +1064,7 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // - GPU -> guest: the replay notes each GPU write into CPU-visible memory at record time (vk_mem_gpu_pending) and
 //   reports it at the fence (vk_gpu_written), which copies those bytes back into guest memory. Until then the CPU
 //   copies skip them: a page the CPU and the GPU both write keeps the GPU's bytes.
-// TOTK_SHADOW=1/0 forces the mode on or off; the default is on for Linux and Wine.
+// TOTK_SHADOW=1/0 (shadow in totk.ini) forces the mode on or off; the default is on for Linux and Wine.
 // - A pool is synced once per submission, in the prologue of the first part that uses it (shadow_sub, set at the
 //   start of each submission's recording): every part syncing its pools again made 157 pool syncs and 110 write-watch
 //   queries a frame on the RX 7800 XT for about 90 pools, and each query re-protects pages, which flushes the TLBs of
