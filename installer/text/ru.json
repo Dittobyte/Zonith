@@ -122,7 +122,7 @@
  "warn.dlss_download_failed": "Не удалось загрузить NVIDIA DLSS с {url}: {detail}. Игра работает и без него; при следующем запуске установка попробует снова.",
  "warn.textures_failed": "Не удалось создать кэш текстур (код выхода {code}; подробности: {log}). Игра декодирует текстуры как раньше; следующий запуск установки попробует снова.",
 
- "ui.title": "Установка TotK",
+ "ui.title": "Установка Zonith",
  "ui.rebuild_title": "Пересборка игры под ваши моды",
  "ui.start_game": "Запустить игру",
  "ui.version": "версия {version}",
@@ -199,7 +199,7 @@
  "param.input.update": "обновление",
  "param.input.keys": "ключи",
 
- "launcher.title": "Установка TotK",
+ "launcher.title": "Установка Zonith",
  "launcher.python_missing": "Файлы установки неполные: рядом с TotK-Setup.exe нет папки python. Распакуйте архив целиком заново и запустите TotK-Setup.exe из распакованной папки.",
 
  "lang.ja": "Японский",

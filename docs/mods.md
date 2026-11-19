@@ -1,6 +1,6 @@
 # Mods
 
-TotK Recomp loads the mods players make for the Switch emulators (Ryujinx, yuzu and its forks): texture and model
+Zonith loads the mods players make for the Switch emulators (Ryujinx, yuzu and its forks): texture and model
 packs, gameplay and text changes from GameBanana and similar sites, TKMM's merged output, code patches (`.ips`,
 `.pchtxt`) and Atmosphère cheat files. No mod or cheat file ships with the port.
 

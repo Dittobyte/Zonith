@@ -437,7 +437,7 @@ exec "$HERE/python/bin/python3" -m installer.gui "$@"
 
 DESKTOP = '''[Desktop Entry]
 Type=Application
-Name=TotK Recomp Setup
+Name=Zonith Setup
 Comment=Builds Tears of the Kingdom for this PC from your own game files
 Exec=AppRun
 Icon=totk-setup

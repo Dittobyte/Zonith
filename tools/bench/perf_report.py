@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarise a TotK Recomp perf log: frame-time percentiles, the bound type, GPU time and hitching.
+"""Summarise a Zonith perf log: frame-time percentiles, the bound type, GPU time and hitching.
 
 Run the game with TOTK_TRACE=perf (or trace = perf in totk.ini) and close the window normally: the log ends
 with the "frametime: exit" line, which this script also prints. Use the same save and the same input script
