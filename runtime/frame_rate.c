@@ -1,6 +1,9 @@
 // Adapted from MacNativeGames games/totk/runtime/game_patches.c @ ebe621d (MIT, Copyright (c) 2026 MacNativeGames
 // contributors): runtime_frame_step_update (2338bb0: no 1/120 s floor) and the speed survey's player chain
 // (world_survey.c player_actor).
+// The interval hold (frame_limit_live, the set interval of patches-v143.txt) follows UltraTears
+// (https://github.com/kuraeow/ultratears @ 9455e9b, src/gfx/nvn/hle_nvn.c nvnWindowSetPresentInterval, TOTK_MAX_INTERVAL;
+// GPL-3.0): the observation that the game waits inside its own frame at present interval 2, and the hold at 1.
 // Frame rate: the frame limit and the real-time frame step, the host half of the patch sets fps60, realtime and cloth
 // (build tables patches-v121.txt, patches-v143.txt).
 //
@@ -80,6 +83,7 @@ static void step_store(float seconds) {
 }
 
 static void frame_limit_live(void);
+static int hold_set = -2, hold_want;   // the set interval (patches-v143.txt) and whether the settings ask for it
 
 void frame_step_init(void) {
     int fps60 = rt_patch_set("fps60"), realtime = rt_patch_set("realtime"), cloth = rt_patch_set("cloth");
@@ -107,7 +111,9 @@ void frame_step_init(void) {
         step_store((float)STEP_FIRST_S);
     }
     frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
-    rt_log("frame rate: present interval %s, %s", rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",
+    rt_log("frame rate: present interval %s, %s",
+           rt_patch_enabled(hold_set) ? "held at 1 (TOTK_INTERVAL_HOLD=0: the game's controller picks 1..3)"
+           : rt_patch_enabled(fps60) ? "1..3 (above 30 fps)" : "2..3 (shipping 30 fps)",
            step_word ? "real-time step (5-frame average of display intervals, at most 1/15 s)" : "whole-vsync steps");
 }
 
@@ -153,6 +159,14 @@ static void frame_limit_live(void) {
     limit_hz = hz;
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
+    // The interval hold makes the controller want 1: only where the minimum is 1 (fps60) and game speed does not
+    // follow the interval (the real-time step).
+    if (hold_set == -2) {
+        hold_set = rt_patch_set("interval");
+        hold_want = rt_patch_enabled(hold_set);
+        if (hold_want && !step_word) rt_log("frame rate: interval hold off, it needs the real-time step (TOTK_REALTIME=0)");
+    }
+    if (hold_set >= 0) rt_patch_switch(hold_set, hold_want && step_word && hz != 30);
     if ((hz > 60 || hz == 0) && !step_word)
         rt_log("frame rate: limits above 60 need the real-time step (TOTK_REALTIME=1); 60 fps");
     else if (hz) rt_log("frame rate: limit %d fps", hz);
