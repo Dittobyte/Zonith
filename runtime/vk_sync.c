@@ -369,7 +369,9 @@ static CmdSlot *take_slot(VkCtx *c, uint64_t fence) {
 // (vk_sync_part, which the caller made the recorder idle for).
 static VkCommandBuffer prologue(VkCtx *c, uint64_t fence, int direct) {
     // Shadow storage: the CPU's writes go in before the part is submitted (TOTK_SYNC_AHEAD: queued for the GPU or
-    // made after the GPU finished the readers the game may think done, vk_memory.c).
+    // made after the GPU finished the readers the game may think done, vk_memory.c). The mirror copies queued before it
+    // are the ones this prologue makes, as they read the shadow (vk_mem_mirror_seal).
+    vk_mem_mirror_seal();
     vk_mem_shadow_sync(fence);
     if (!vk_mem_mirror_pending() && !vk_mem_shadow_deferred()) return VK_NULL_HANDLE;
     int i = claim_slot(c, fence);   // before reading slots: the claim may move it
@@ -476,6 +478,13 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     ts_begin(s->cb);
     int recorded = vk_exec_record(s->cb, handles, n, fence);
     s = &slots[cur_slot];   // the last part (vk_sync_split)
+    // No render pass is open here (vk_exec_record ended it), and s->cb is the recorder's like the commands before it.
+    vk_texture_eager_record(recorded ? s->cb : VK_NULL_HANDLE, fence);
+    // The per-fence snapshots of small render targets go at the end of the part too, after every command that renders
+    // them and before the value is signalled. A separate epilogue command buffer took a slot of its own while the
+    // recorder thread could still be on the part (vk_rec.c), and with the recorder on it crashed in AMD's Windows
+    // driver after the first load. The epilogue stays for a submission without a part.
+    if (recorded && vk_texture_snapshot_due(fence)) vk_texture_snapshot_record(s->cb, fence);
     if (recorded) ts_end(s->cb, fence);
     else ts_drop();
     // The recorder is done with the part: the end-of-submission crumb, then the end, by the recorder when it records.
@@ -484,7 +493,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     // After the recording: the uploads it asked for (and every earlier one) precede it in queue order.
     vk_upload_flush(0);
     VkCommandBuffer pro = prologue(c, fence, 0);
-    VkCommandBuffer epi = epilogue(c, fence);
+    VkCommandBuffer epi = recorded ? VK_NULL_HANDLE : epilogue(c, fence);
     s = &slots[cur_slot];
     VkCommandBufferSubmitInfo cbi[3];
     uint32_t ncb = 0;
