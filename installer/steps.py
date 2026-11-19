@@ -373,6 +373,10 @@ class Check(Step):
             raise InstallError('check.release_incomplete', paths=missing[:5])
         if dest.exists() and not dest.is_dir():
             raise InstallError('check.dest_not_folder', path=str(dest))
+        # Only a new install: a game already installed there keeps its updates and its rebuild for mods.
+        replaced = layouts.replaced_folder(layout, dest) if ctx.mode == 'install' else None
+        if replaced is not None:
+            raise InstallError('check.dest_replaced', path=str(dest), folder=str(replaced))
         own = (ctx.temp, *ctx.temp.parents)   # a temp folder inside the install folder (installer/cli.py) is ours
         if ctx.mode == 'install' and dest.is_dir() and any(p not in own for p in dest.iterdir()):
             raise InstallError('check.dest_not_empty', path=str(dest))

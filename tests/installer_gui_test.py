@@ -41,7 +41,8 @@ from installer.runner import Context  # noqa: E402
 from installer.steps import Fonts, all_steps  # noqa: E402
 from installer.guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS,  # noqa: E402
                                 UI_LANGUAGES, Catalog, Form, Model, Process, amount, default_game_language,
-                                describe_event, parse_line, ui_language_for_langid, windows_ui_language)
+                                describe_event, parse_line, picker_folder, ui_language_for_langid,
+                                windows_ui_language)
 
 INSTALLED = ROOT / 'build' / 'install-test'
 FIXTURE = ROOT / 'build' / 'inst-gui' / 'e2e-install'
@@ -250,6 +251,55 @@ class FormTest(unittest.TestCase):
     def _mkdir(path):
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+
+class PickerTest(unittest.TestCase):
+    """Every Browse button opens at the field's path or the home folder, never at the working folder: the Recompia
+    launcher starts the setup inside its own folder of setups, and Tk's pickers open in the working folder."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / 'prod.keys').write_bytes(b'x')
+        self.launcher = self.dir / 'zonith'
+        (self.launcher / 'v0.5.0').mkdir(parents=True)
+        (self.launcher / 'current.json').write_text('{}', encoding='utf-8')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_start_folder(self):
+        home = str(Path.home())
+        self.assertEqual(picker_folder(''), home)
+        self.assertEqual(picker_folder('  '), home)
+        self.assertEqual(picker_folder('TotK'), home)   # relative: it would name the working folder
+        self.assertEqual(picker_folder(str(self.dir)), str(self.dir))
+        self.assertEqual(picker_folder(str(self.dir / 'prod.keys')), str(self.dir))
+        self.assertEqual(picker_folder(str(self.dir / 'new' / 'TotK')), str(self.dir))
+        self.assertEqual(picker_folder(str(self.launcher / 'v0.5.0')), home)
+
+    def test_every_picker_gets_a_start_folder(self):
+        if gui is None:
+            self.skipTest('no tkinter')
+        fields = {n: FakeVar('') for n in ('base', 'update', 'keys', 'firmware', 'dest')}
+        fields['keys'] = FakeVar(str(self.dir / 'prod.keys'))
+        app = SimpleNamespace(cat=lambda id, **kw: id, vars=fields, layout=None)
+        with unittest.mock.patch.object(gui, 'filedialog') as dialog:
+            dialog.askopenfilename.return_value = dialog.askdirectory.return_value = ''
+            for name in ('base', 'update', 'keys'):
+                gui.App.pick_file(app, name, f'ui.pick_{name}')
+            gui.App.pick_firmware(app)
+            gui.App.pick_dest(app)
+        starts = [c.kwargs['initialdir'] for c in dialog.askopenfilename.call_args_list + dialog.askdirectory.call_args_list]
+        home = str(Path.home())
+        self.assertEqual(starts, [home, home, str(self.dir), home, home])
+
+    def test_the_form_refuses_a_new_install_in_the_launcher_folder(self):
+        self.assertEqual(Form(dest=str(self.launcher / 'TotK')).problems()[0], 'ui.dest_replaced')
+        out = self.launcher / 'TotK'
+        out.mkdir()
+        statefile.save(out, statefile.empty('r0'))
+        self.assertEqual(Form(dest=str(out)).problems(), [])
 
 
 class CatalogTest(unittest.TestCase):

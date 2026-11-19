@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import ini
+from . import layout as layouts
 from . import state as statefile
 from .events import render
 
@@ -130,6 +131,22 @@ def amount(cat, done, total, unit):
 
 # ---- the form ----------------------------------------------------------------------------------------------------
 
+def picker_folder(value, layout=None):
+    """The folder a file or folder picker opens in: the field's path, or the nearest folder above it that exists, else
+    the home folder. Never the working folder, where Tk's pickers open without an initialdir: the Recompia launcher
+    starts the setup inside its own folder of setups, which it replaces on updates (layout.py replaced_folder), and a
+    path in such a folder opens the home folder too."""
+    path = Path(value.strip()) if value.strip() else None
+    if path is not None and path.is_absolute():
+        try:
+            folder = next((p for p in (path, *path.parents) if p.is_dir()), None)
+        except OSError:
+            folder = None
+        if folder is not None and layouts.replaced_folder(layout, folder) is None:
+            return str(folder)
+    return str(Path.home())
+
+
 @dataclass
 class Form:
     base: str = ''
@@ -139,6 +156,7 @@ class Form:
     lang: str = ''
     dest: str = ''
     dlss: bool = False
+    layout: object = None   # the running setup's (layout.py), for replaced_folder
 
     def installed_state(self):
         """The recorded state of the install folder (totk-install.json), or None. Never raises."""
@@ -159,6 +177,8 @@ class Form:
         update = self.update_mode()
         if not self.dest.strip():
             found.append('ui.need_dest')
+        elif not update and layouts.replaced_folder(self.layout, self.dest.strip()) is not None:
+            found.append('ui.dest_replaced')
         if not update:
             for name in ('base', 'update', 'keys'):
                 value = getattr(self, name).strip()

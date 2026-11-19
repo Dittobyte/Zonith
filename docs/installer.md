@@ -16,6 +16,11 @@ setup folder can be deleted after the install and the install folder moved.
    - optionally the firmware folder (`system/Contents/registered` of an unpacked firmware or an emulator's install),
      needed for Chinese, Korean and Traditional Chinese text;
    - the game language and the install folder.
+
+   Each Browse button opens at the field's path, else at the home folder, never at the setup's working folder. A new
+   install is refused inside the setup's own folder (Windows release) and inside the Recompia launcher's folder of
+   setups (a `zonith` folder with `current.json`), because a newer setup replaces them (`layout.py`
+   `replaced_folder`).
 3. Waits for the setup, one time. The window shows each step and its progress.
 4. Plays `totk.exe` from the install folder. The setup folder and the source NSP or XCI (or NSZ, XCZ) can be deleted,
    and the install folder can be moved: code mods rebuild the game with the build kit inside it.
