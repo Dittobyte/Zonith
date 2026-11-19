@@ -582,7 +582,10 @@ def check_bundle(out):
     errors = [e['id'] for e in events if e['type'] == 'error']
     started = any(e['type'] == 'start' and e.get('release') == (out / 'VERSION').read_text().strip() for e in events)
     steps = [e['phase'] for e in events if e['type'] == 'progress']
-    if errors != ['check.inputs_needed'] or not started or 'inputs' not in steps:
+    # A runner without a GPU (the release workflow: TOTK_RELEASE_NO_GPU=1) stops at the Vulkan device in the host
+    # check, the step before the game files; everything up to it still ran from the folder.
+    no_gpu = os.environ.get('TOTK_RELEASE_NO_GPU') == '1' and errors == ['check.vulkan_no_device'] and 'host' in steps
+    if not no_gpu and (errors != ['check.inputs_needed'] or not started or 'inputs' not in steps):
         sys.exit(f'bundle check: exit {r.returncode}, errors {errors}, release read {started}\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}')
     print(f'bundle check: the installer ran the host check from the folder and stopped at the game files (exit {r.returncode})')
     r = subprocess.run([py, '-m', 'installer.gui', '--selftest'], cwd=out, env=env, capture_output=True, text=True, timeout=300)

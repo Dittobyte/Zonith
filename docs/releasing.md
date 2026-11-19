@@ -1,33 +1,32 @@
 # Releasing
 
-A release is the Windows setup zip and the Linux AppImage of `main`, built on the machine that holds the game files.
-GitHub's own runners cannot build it: `tools/make_release.py` and `tools/make_release_linux.py` compile the runtime
-library against a lifted game version (`generated/v121` or `v143`), and nothing derived from the game leaves that
-machine. The release itself carries no game data (`check_content` runs over both folders).
+A release is the Windows setup zip and the Linux AppImage, both built on GitHub's runners by
+`.github/workflows/release.yml`. The release carries the setup and a toolchain, never game data: the player's machine
+lifts and compiles the game (`check_content` runs over both folders before they are packed).
 
 ## Steps
 
 1. Bump `VERSION` (and the README badge) in a pull request and merge it.
-2. Run the **Release** workflow (Actions, *Run workflow*) with the notes, or run it by hand:
+2. Actions → **Release** → *Run workflow* on `main`, with the notes (short Added / Changed / Fixed one-liners) and
+   *publish* ticked. Without *publish* the run only builds, and keeps both files as the run's artifacts.
 
-   ```
-   .venv\Scripts\python tools\release.py --notes notes.md [--publish]
-   ```
+With *publish* the run stops at once when the tag `v<VERSION>` exists. Otherwise it builds both files, makes the
+release as a draft on the commit it built, attaches them, checks their sizes on GitHub, and only then publishes it,
+which creates the tag. A failed build or upload never leaves a published release.
 
-`tools/release.py` takes the remote's `main`, checks it out in `.worktrees/release-<version>` linked to the checkout's
-ignored data, builds the translator, the Windows zip and, in WSL, the AppImage (`tools/release_wsl.sh`), makes the
-GitHub release as a draft, attaches both files and checks their sizes on GitHub. Only then does `--publish` publish
-it, which creates the tag `v<version>`. A run stops before building when that tag already exists, and a failed upload
-leaves the draft unpublished. Release notes are short Added / Changed / Fixed one-liners.
+## What the runners build from
 
-## The self-hosted runner
+- **Generated headers.** The runtime library compiles against `generated/<version>/layout.json`, `layout.h` and
+  `patches.h`, never against lifted code. `tools/release_seed.py` writes all three without game files: the module
+  sizes it lists (the only numbers taken from the game's ExeFS) and `recomp/patches-<version>.txt`. When a game update
+  changes a module size, add it to `SIZES`; `release_seed.py --check generated/<version>` compares the seed with a
+  folder that `recomp/gen.py` lifted.
+- **Execution profile.** `tools/release_pgo.py` takes `data/pgo-*.profdata` from the latest published release's
+  Windows zip. A retrained profile (docs/pgo.md) reaches the workflow by shipping once in a release made by hand:
+  `tools/make_release.py` and `tools/make_release_linux.py --pgo` read `build/pgo`.
+- **Everything else** comes from the pinned downloads of the release tools and `tools/fetch_refs.sh`.
 
-The workflow runs on a runner labelled `zonith-release` on the machine with the game files. Set it up once:
+## By hand
 
-1. GitHub: *Settings → Actions → Runners → New self-hosted runner*, Windows x64. Follow its download and
-   `config.cmd` steps, adding `--labels zonith-release`. Start it with `run.cmd`, or install it as a service.
-2. In the runner's folder, add `ZONITH_CHECKOUT=<path of this checkout>` to its `.env` file.
-3. The checkout needs what a hand-made release needs: MSYS2 UCRT64 at `C:\msys64`, `.venv` and `.venv-py314`, one
-   lifted game version in `generated/`, `refs/` (`tools/fetch_refs.sh`), the execution profiles in `build/pgo`, and
-   WSL with Ubuntu 24.04 (`ZONITH_WSL_DISTRO` picks another). `release_wsl.sh` installs the .NET 10 SDK into WSL's
-   `~/.dotnet` and a Python with Pillow on its first run.
+The same two tools build a release on a developer machine (`docs/installer.md`, "Release layout" and "Linux
+release"); a lifted `generated/<version>` there also allows `--prove`, which the runners cannot run.
