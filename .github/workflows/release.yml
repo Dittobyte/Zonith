@@ -1,0 +1,43 @@
+name: Release
+
+# Builds the Windows zip and the Linux AppImage of main and makes the GitHub release (tools/release.py). The build
+# compiles against a lifted game version, which never leaves the machine with the player's own game files, so this runs
+# only on a self-hosted runner there, labelled "zonith-release", whose environment sets ZONITH_CHECKOUT to the checkout
+# that holds generated/, refs/, toolchain/ and the venvs (docs/releasing.md).
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Release notes (Markdown: Added / Changed / Fixed one-liners)"
+        required: true
+      publish:
+        description: "Publish once every asset is attached (off: leave a draft)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: [self-hosted, windows, zonith-release]
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ inputs.notes }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          Set-Content -Path $notes -Value $env:NOTES -Encoding utf8
+          $args = @('tools/release.py', '--notes', $notes)
+          if ($env:PUBLISH -eq 'true') { $args += '--publish' }
+          & "$env:ZONITH_CHECKOUT\.venv\Scripts\python.exe" @args
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
