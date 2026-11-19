@@ -29,6 +29,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  TOTK_RELEASE_NO_GPU: "1"   # the runners have no GPU: the bundle check accepts the host check stopping at Vulkan
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
   DOTNET_NOLOGO: "1"
 
