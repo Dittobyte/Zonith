@@ -54,10 +54,13 @@ typedef struct {
 // TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
+    uint64_t barrier_bit[8];                  // the game's Barrier calls that carry NVN barrier bit 0..7 (TOTK_TRACE=gfx)
+    uint64_t barrier_merged;                  // the game's Barrier calls the open pass went on through (barrier_merge)
+    uint64_t barrier_undone;                  // passes a draw then ended for a read the merge cannot order (merge_guard)
+    uint64_t pass_end_rt, pass_end_barrier;   // passes ended by other render targets, by the game's own Barrier (TOTK_TRACE=gfx)
     uint64_t fb_draws, fb_barriers, fb_restarts, fb_layouts;   // feedback loops: draws sampling a written target of
                                                                // their pass, in-pass barriers, pass restarts, layout
                                                                // transitions
-    uint64_t held_barriers;                                    // game barriers held inside a pass (vk_exec_game_barrier)
 } VkExecFrame;
 
 // A record the scan of a chunked replay planned before an op: a contact shadow march (vk_contact.c: vk_contact_plan
@@ -116,6 +119,7 @@ typedef struct VkExec {
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];   // OP_STENCIL per face (0 front, 1 back): compare mask, write mask, ref
     float point_size;                    // OP_BIND_STATE kind 6: NVN point size for the support buffer; 0 = never set = 1
     p_poly_offset poly_offset;           // OP_POLY_OFFSET: depth bias factor, units, clamp
+    int8_t volume_bias;                  // the sign of the volume bias recorded in place of poly_offset: set by prepare_draw, used by record_fixed
     p_prim_restart prim_restart;         // OP_PRIM_RESTART: applied to indexed strip and fan draws (op_draw_idx)
     float blend_color[4];                // OP_BLEND_COLOR
     int64_t copy_stride;                 // OP_COPY_STRIDE: row stride of buffer <-> texture copies (vk_exec_xfer.c)
@@ -147,8 +151,6 @@ typedef struct VkExec {
     void *views;                         // image views created for this command buffer (freed at its fence)
     int nviews, cap_views;
     int barrier_at;                      // recorded right after the last full barrier (-1: none yet)
-    uint8_t barrier_held;                // a game barrier inside the open pass, owed at its end (vk_exec_game_barrier)
-    uint8_t pass_stored;                 // a draw of the open pass stores to a buffer or image
 
     // Feedback loops (vk.h VkCtx.feedback, vk_exec_draw.c feedback_prepare). Learned targets are attached in
     // ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT; they stay in it across consecutive passes and go back to GENERAL at the next
@@ -161,6 +163,12 @@ typedef struct VkExec {
                                          // or the last in-pass barrier
     const void *fb_fs;                   // feedback_scan's memo: fragment shader, texture bind serial, pass serial
     uint32_t fb_serial, fb_pass, fb_sampled;
+    // barrier_merge (vk_exec.c barrier_merges): bmerge is TOTK_BARRIER_MERGE, read once when the context is reset;
+    // pass_storage: a draw of the open pass may write a storage buffer or image; pass_merged: the open pass went on
+    // through a game Barrier. Both are cleared by the full barrier of every pass begin (barrier_to).
+    uint8_t bmerge, pass_storage, pass_merged;
+    const void *bm_vs;                   // merge_guard's memo: vertex shader, texture bind serial, pass serial, answer
+    uint32_t bm_serial, bm_pass, bm_hit;
     uint32_t tex_serial, pass_serial;    // bumped by every texture or image bind and pass begin
     // TOTK_BIND_INC (vk_exec_draw.c): the slots the bind ops changed since this context's last prepared draw, cleared
     // by that draw; vk_exec_draw_new_cb and copy_state set every bit. pipe_gen: bumped by every write that changes
@@ -203,7 +211,7 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
-void vk_exec_game_barrier(VkExec *ex, int bits);   // OP_BARRIER: NVNbarrierBits
+int vk_exec_barrier_merge_on(void);   // TOTK_BARRIER_MERGE, read once (vk_exec.c barrier_merges)
 // UpdateUniformBuffer overlays (vk_exec_draw.c): the copies into the real buffers that updates inside a pass left for
 // the next barrier (barrier_to records them first), and a GPU write of another kind into [addr, addr+n) of this
 // submission (a copy, a fill, a storage write), which retires the overlays it touches.
