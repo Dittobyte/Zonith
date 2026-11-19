@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "bc7.h"
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
@@ -371,26 +370,6 @@ static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t 
 }
 
 // defer_init: the caller records the image's first transition (init_image or alias_copy).
-// The cache format of a 2D ASTC texture (bc7.h): BC7_FMT_BC7 / BC7_FMT_BC1 when every level of every layer is cached
-// in that one format, else 3 (an RGBA8 image whose upload queues its surfaces for encoding). Deswizzles each surface
-// once here and again at the upload.
-// ponytail: deswizzled twice per created texture; keep the rows from here if create_tex shows up in profiles.
-static int bc7_pick(const tex_t *t, const TexVkFormat *f, uint32_t levels, uint32_t layers) {
-    const nvn_texdesc *d = &t->d;
-    int fmt = -1;
-    for (uint32_t lv = 0; lv < levels && fmt; lv++)
-        for (uint32_t ly = 0; ly < layers && fmt; ly++) {
-            uint32_t w = mip(d->width, lv), h = mip(d->height, lv);
-            size_t rb = (size_t)(w + f->astc_bw - 1) / f->astc_bw * 16, n = rb * ((h + f->astc_bh - 1) / f->astc_bh);
-            uint8_t *rows = malloc(n);
-            int got = rows && !nvn_deswizzle(d, lv, ly, t->mem, rows, rb)
-                          ? bc7_lookup(bc7_key_of(rows, n, w, h, f->astc_bw, f->astc_bh)) : BC7_MISS;
-            free(rows);
-            fmt = fmt < 0 || fmt == got ? got : BC7_MISS;
-        }
-    return fmt > 0 ? fmt : 3;
-}
-
 static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     static volatile int32_t n_unmapped, n_unsupported, n_failed, n_unbound, n_thick;
     VkCtx *c = vk_ctx();
@@ -424,20 +403,6 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     if (levels > most) levels = most;
     uint32_t samples = d->samples > 1 ? (uint32_t)d->samples : 1;
     if (samples > 1) levels = 1;
-    // TOTK_BC7: an ASTC texture the cache holds becomes a BC7 / BC1 image (a quarter / an eighth of RGBA8's bytes)
-    if (f.astc_bw && !f.astc_bc && bc7_on() && type == VK_IMAGE_TYPE_2D && samples == 1 && scale == 1 && t->mem &&
-        tex_mirrored(t) && !nvn_tex_is_linear(d) && f.astc_bw * f.astc_bh <= 144) {
-        f.bc7 = (uint8_t)bc7_pick(t, &f, levels, layers);
-        static uint32_t n_pick, n_hit;   // whether the cache's keys match ours: the hit rate in the log
-        uint32_t np = __atomic_add_fetch(&n_pick, 1, __ATOMIC_RELAXED), nh = __atomic_add_fetch(&n_hit, f.bc7 != 3, __ATOMIC_RELAXED);
-        if (np == 64 || !(np & 1023)) rt_log("vk: BC7 cache: %u of %u ASTC textures found", nh, np);
-        if (f.bc7 != 3) {
-            VkFormat bc = f.bc7 == BC7_FMT_BC1 ? (f.astc_srgb ? VK_FORMAT_BC1_RGB_SRGB_BLOCK : VK_FORMAT_BC1_RGB_UNORM_BLOCK)
-                                               : (f.astc_srgb ? VK_FORMAT_BC7_SRGB_BLOCK : VK_FORMAT_BC7_UNORM_BLOCK);
-            VkFormatFeatureFlags need = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-            if ((features_of(bc) & need) == need) f.vk = bc; else f.bc7 = 0;
-        }
-    }
     VkFormatFeatureFlags ff = features_of(f.vk);
     VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     int ds = f.depth || f.stencil;
@@ -971,9 +936,8 @@ static void upload_cpu(Tex *e) {
     int bw, bh, bpb = nvn_fmt_bpb(d->format, &bw, &bh);
     int linear = nvn_tex_is_linear(d), is3d = d->target == NVN_TEXTURE_TARGET_3D, one_d = e->pub.type == VK_IMAGE_TYPE_1D;
     uint32_t levels = linear ? 1 : e->pub.levels, layers = linear ? 1 : e->pub.layers;
-    int astc = e->f.astc_bw != 0, rgb = e->f.expand_rgb, bc = e->f.bc7 == BC7_FMT_BC7 || e->f.bc7 == BC7_FMT_BC1;
-    int queue = e->f.bc7 == 3 && !e->uploaded;   // a cache miss: the surfaces go to the background encoder once
-    int agpu = astc && !bc && vk_astc_gpu(), acheck = agpu && vk_astc_mode() == VK_ASTC_CHECK;   // raw blocks to the GPU
+    int astc = e->f.astc_bw != 0, rgb = e->f.expand_rgb;
+    int agpu = astc && vk_astc_gpu(), acheck = agpu && vk_astc_mode() == VK_ASTC_CHECK;   // raw blocks to the GPU
     uint32_t n = levels * layers, k = 0;
     VkBufferImageCopy *rg = calloc(n, sizeof *rg);
     VkAstcRegion *ar = agpu ? calloc(n, sizeof *ar) : NULL;
@@ -982,7 +946,7 @@ static void upload_cpu(Tex *e) {
         for (uint32_t ly = 0; ly < layers; ly++) {
             uint32_t w = mip(d->width, lv), h = one_d ? 1 : mip(d->height, lv), sl = is3d ? mip(d->depth, lv) : 1;
             uint64_t texels = (uint64_t)w * h * sl, raw = (uint64_t)(w + bw - 1) / bw * bpb * ((h + bh - 1) / bh) * sl;
-            uint64_t out = bc ? (e->f.bc7 == BC7_FMT_BC1 ? bc1_size(w, h) : bc7_size(w, h)) : agpu ? raw : astc ? texels * 4 : rgb ? texels * (uint64_t)bpb / 3 * 4 : raw;
+            uint64_t out = agpu ? raw : astc ? texels * 4 : rgb ? texels * (uint64_t)bpb / 3 * 4 : raw;
             rg[k++] = (VkBufferImageCopy){.bufferOffset = total, .imageSubresource = {e->pub.aspect, lv, ly, 1},
                                           .imageExtent = {w, h, sl}};
             total += (out + 15) & ~15ull;
@@ -1010,25 +974,12 @@ static void upload_cpu(Tex *e) {
             size_t raw = (size_t)rb * rows * sl;
             rg[k].bufferOffset -= base;
             uint8_t *dst = stg + rg[k].bufferOffset, *tmp = (astc && !agpu) || rgb ? malloc(raw) : NULL;
-            const uint8_t *blk = tmp ? tmp : dst;
             if (nvn_deswizzle(d, lv, ly, t->mem, tmp ? tmp : dst, rb)) {
                 log_limited(&n_bad, "texture %#llx fmt %#x target %d: level %u layer %u has no CPU layout; uploaded as zeros",
                             (unsigned long long)e->pub.addr, d->format, d->target, lv, ly);
                 memset(tmp ? tmp : dst, 0, raw);
             }
-            if (queue && sl == 1)
-                bc7_queue(bc7_key_of(blk, raw, w, h, e->f.astc_bw, e->f.astc_bh), blk, w, h, e->f.astc_bw, e->f.astc_bh,
-                          e->f.astc_srgb);
-            if (bc) {
-                Bc7Key bk = bc7_key_of(blk, raw, w, h, e->f.astc_bw, e->f.astc_bh);
-                size_t bn = e->f.bc7 == BC7_FMT_BC1 ? bc1_size(w, h) : bc7_size(w, h);
-                if (!bc7_read(bk, e->f.bc7, dst, bn)) {   // the storage changed since the image was made
-                    uint64_t a0 = perf_begin();
-                    bc7_encode_now(bk, blk, w, h, e->f.astc_bw, e->f.astc_bh, e->f.astc_srgb, e->f.bc7, dst);
-                    perf_end(PERF_ASTC, a0);
-                }
-                rg[k].bufferRowLength = (w + 3) & ~3u, rg[k].bufferImageHeight = (h + 3) & ~3u;
-            } else if (agpu) {
+            if (agpu) {
                 ar[k] = (VkAstcRegion){.src = rg[k].bufferOffset, .w = w, .h = h, .slices = sl, .level = lv, .layer = ly};
             } else if (astc) {
                 uint64_t a0 = perf_begin();
@@ -1092,8 +1043,8 @@ static void upload_cpu(Tex *e) {
 #define DESWZ_CHUNK (32ull << 20)
 
 // Uploads by path since the last perf summary (TOTK_TRACE=perf): 0 GPU, else why the CPU took it.
-enum { UP_GPU, UP_MODE, UP_LINEAR, UP_RGB, UP_BC7, UP_ASTC_CPU, UP_BPB, UP_NOT_LIVE, UP_GEOM, UP_LIMITS, UP_SCRATCH, UP_WHY };
-static const char *const up_why_name[UP_WHY] = {"gpu", "cpu mode", "linear", "rgb", "bc7 cache", "astc on cpu", "bytes per block",
+enum { UP_GPU, UP_MODE, UP_LINEAR, UP_RGB, UP_ASTC_CPU, UP_BPB, UP_NOT_LIVE, UP_GEOM, UP_LIMITS, UP_SCRATCH, UP_WHY };
+static const char *const up_why_name[UP_WHY] = {"gpu", "cpu mode", "linear", "rgb", "astc on cpu", "bytes per block",
                                                 "not an imported pool", "layout", "device limits", "scratch"};
 static uint64_t up_n[UP_WHY], up_bytes[UP_WHY], up_ns[UP_WHY];
 static int up_why;   // upload_gpu's reason for returning 0 (texture lock held)
@@ -1104,13 +1055,7 @@ static int upload_gpu(Tex *e) {
     const tex_t *t = &e->t;
     const nvn_texdesc *d = &t->d;
     int mode = vk_deswz_mode();
-    // An ASTC texture the BC7 cache answered (bc7_pick) is a BC7 or BC1 image: its blocks come from the cache in
-    // upload_cpu. The GPU path would decode the ASTC storage and copy RGBA8 texels (or BC3 blocks) into it, which the
-    // image reads as BC7 blocks of random colours; the cache fills while the game runs, so this showed only after a
-    // few minutes of play, on the textures created again since.
-    const int bc7 = e->f.bc7 == BC7_FMT_BC7 || e->f.bc7 == BC7_FMT_BC1;
-    up_why = mode == VK_DESWZ_CPU ? UP_MODE : nvn_tex_is_linear(d) ? UP_LINEAR : e->f.expand_rgb ? UP_RGB
-           : bc7 ? UP_BC7 : UP_GPU;
+    up_why = mode == VK_DESWZ_CPU ? UP_MODE : nvn_tex_is_linear(d) ? UP_LINEAR : e->f.expand_rgb ? UP_RGB : UP_GPU;
     if (up_why) return 0;
     int astc = e->f.astc_bw != 0, agpu = astc && vk_astc_gpu();
     if (astc && (!agpu || vk_astc_mode() == VK_ASTC_CHECK)) return up_why = UP_ASTC_CPU, 0;   // or ASTC's check mode
@@ -1364,8 +1309,7 @@ static void make_fresh_snap(Tex *e) {
 // Bytes per block and block size of the image's VkFormat (ASTC decodes to RGBA8, RGB expands to RGBA); 0 when the
 // VkFormat substitutes another one of unknown size.
 static int img_block(const Tex *e, int *bw, int *bh) {
-    if (e->f.astc_bc || e->f.bc7 == BC7_FMT_BC7) { *bw = *bh = 4; return 16; }
-    if (e->f.bc7 == BC7_FMT_BC1) { *bw = *bh = 4; return 8; }
+    if (e->f.astc_bc) { *bw = *bh = 4; return 16; }
     if (e->f.astc_bw) { *bw = *bh = 1; return 4; }
     int b = nvn_fmt_bpb(e->t.d.format, bw, bh);
     if (e->f.expand_rgb) { *bw = *bh = 1; return b / 3 * 4; }
@@ -2091,11 +2035,6 @@ static int image_texels(Tex *e, const Region *g, const NVNcopyRegion *r, uint8_t
         vk_upload_flush(1);
         texels_read_take(e, g, &t, mem);
         return 1;
-    }
-    if (e->f.bc7 == BC7_FMT_BC7 || e->f.bc7 == BC7_FMT_BC1) {   // re-uploaded from the storage instead
-        log_limited(&n_astc, "WriteTexels into BC7-cached ASTC texture %#llx: not written to the image",
-                    (unsigned long long)e->pub.addr);
-        return 0;
     }
     if (!read_aspect(e, &aspect)) {
         log_limited(&n_ds, "texels of packed depth-stencil format %#x are not copied", e->t.d.format);

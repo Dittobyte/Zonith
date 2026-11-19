@@ -206,8 +206,10 @@ def build_bin(out, llvm, sysroot):
 
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
 
-def runtime_lib(out, llvm, sysroot):
-    """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
+def runtime_lib(out, llvm, sysroot, pgo):
+    """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too. pgo: the
+    release's profiles (make_release.py profiles()); the libraries compile with the newest version's, as on Windows."""
+    newest = sorted(pgo.items())[-1:]
     version = mr.lifted_version()
     rt = out / 'runtime'
     for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
@@ -215,7 +217,8 @@ def runtime_lib(out, llvm, sysroot):
         shutil.rmtree(build, ignore_errors=True)
         run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm,
              '--sysroot', sysroot, '--cpu', cpu, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja',
-             '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
+             '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build,
+             *(['--pgo', newest[0][1]] if newest else [])])
         shutil.copy2(build / 'libtotkrt.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
@@ -565,6 +568,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
+    ap.add_argument('--pgo', action='store_true',
+                    help="ship build/pgo's execution profiles and compile the runtime libraries with the newest one "
+                         '(docs/pgo.md); without it the setup builds the game without a profile')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
                     help='--prove: build and run the check for this CPU level (default v3)')
@@ -580,10 +586,11 @@ def main():
     sysroot = full_sysroot()
     build_deps(out, llvm, sysroot)
     build_bin(out, llvm, sysroot)
-    rtlib = runtime_lib(out, llvm, sysroot)
+    pgo = mr.profiles() if args.pgo else {}
+    rtlib = runtime_lib(out, llvm, sysroot, pgo)
     build_sysroot(out, sysroot, used_sysroot_files(out, llvm, sysroot, rtlib))
     build_python(out, llvm, sysroot)
-    mr.build_sources(out, {})   # no profiles: the Linux setup compiles without one (installer/layout.py, pgo_dir)
+    mr.build_sources(out, pgo)   # --pgo: data/pgo-<v>.profdata, which the setup then compiles the game with
     collect_licenses(out, sysroot)
     build_entry(out)
     mr.check_folder(out)

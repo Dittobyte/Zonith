@@ -6,7 +6,6 @@
  "step.lift": "Translating the game code to C",
  "step.compile": "Compiling {game_exe}",
  "step.prepare": "Preparing the shaders",
- "step.textures": "Re-encoding the textures for this graphics card",
  "step.pc_prompts": "Drawing the keyboard and mouse prompts",
  "step.shapes": "Laying out the game screens for your displays",
  "step.dlss": "Downloading NVIDIA DLSS",
@@ -41,7 +40,6 @@
  "phase.prepare.pack": "Packing the shader cache into one file",
  "phase.shapes.layouts": "Writing the screen layouts and button prompts for each display shape",
  "phase.dlss.download": "Downloading nvngx_dlss.dll from NVIDIA's DLSS SDK",
- "phase.textures.encode": "Encoding the game's ASTC textures to BC7 (once; it takes a while)",
  "phase.cleanup.ini": "Writing totk.ini",
  "phase.cleanup.temp": "Removing temporary files",
 
@@ -120,7 +118,6 @@
  "warn.kernel_old": "Linux {version} lacks the write tracking the game relies on (6.7 or later); the game may run very slowly. Updating the system fixes this.",
  "warn.dlss_kept": "A DLSS library is already in the install folder ({path}); the setup keeps it.",
  "warn.dlss_download_failed": "NVIDIA DLSS could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
- "warn.textures_failed": "The texture cache could not be built (exit code {code}; details: {log}). The game decodes textures as before; the next setup run tries again.",
 
  "ui.title": "Zonith Setup",
  "ui.rebuild_title": "Rebuilding the game for your mods",

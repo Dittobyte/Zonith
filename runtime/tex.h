@@ -55,8 +55,6 @@ typedef struct TexVkFormat {
                                   // zero for native ASTC (vk == ideal, raw blocks as for BC)
     uint8_t astc_srgb;
     uint8_t astc_bc;              // ASTC decoded and then encoded to BC3 (vk BC3, TOTK_ASTC_BC; vk_astc.c)
-    uint8_t bc7;                  // ASTC from the BC7 cache (bc7.h): BC7_FMT_BC7 / BC7_FMT_BC1 image; 3: an RGBA8 image
-                                  // the cache missed, its upload queues the blocks for encoding
     uint8_t depth, stencil;       // aspect flags of depth / stencil formats
     const char *note;             // why a fallback or an expansion was chosen; NULL when the mapping is direct
     const char *reason;           // unmapped formats only: why there is no Vulkan format

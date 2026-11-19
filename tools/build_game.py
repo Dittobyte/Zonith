@@ -135,12 +135,17 @@ PGO_INPUT = None   # the .profdata of --pgo FILE: every compile depends on it, s
 PORTABLE = False
 
 
+def gen_o2():
+    """The generated code at -O2, whatever TOTK_GEN_OPT asked for: the level a profile is trained and used at."""
+    GEN_FLAGS[0] = '-O2'
+
+
 def set_pgo(pgo, out):
     """--pgo gen: instrument the generated code and the runtime; totk.exe adds its counts to
     out/pgo/default_<id>.profraw every minute and at exit (runtime/platform win32.c), across runs. --pgo FILE: compile
     with that merged profile (tools/pgo.py merge). Functions the profile never saw run are optimised for size."""
     global PGO_INPUT
-    GEN_FLAGS[GEN_FLAGS.index('-O1')] = '-O2'
+    gen_o2()
     if pgo == 'gen':
         # absolute: the instrumented exe resolves the directory against its own working directory
         flags = [f'-fprofile-generate={cmd_arg((out / "pgo").resolve().as_posix())}']
@@ -151,9 +156,20 @@ def set_pgo(pgo, out):
         if not PGO_INPUT.is_file():
             sys.exit(f'--pgo {pgo}: no such profile')
         # unprofiled: chunks the training never entered; out-of-date and backend-plugin: functions whose code changed
-        # since the training, which then compile without a profile
+        # since the training, which then compile without a profile. TOTK_PGO_WARN=1 in the environment leaves the
+        # backend's warnings on: one "hash mismatch" line per function the profile no longer fits, to count them.
         flags = [f'-fprofile-use={cmd_path(PGO_INPUT)}', '-Wno-profile-instr-unprofiled',
-                 '-Wno-profile-instr-out-of-date', '-Wno-backend-plugin']
+                 '-Wno-profile-instr-out-of-date']
+        if os.environ.get('TOTK_PGO_WARN', '0') in ('', '0'):
+            flags.append('-Wno-backend-plugin')
+        if not WIN:
+            # ELF: with a profile clang puts functions into .text.hot and .text.unlikely, which ld.lld groups across
+            # all the objects, and the objects carry a call graph the linker orders the whole program by. Either
+            # way runtime functions (rt_dispatch) land inside the lifted code's address range, and runtime/kernel.c
+            # ap_init then turns asynchronous preemption off. One .text in input order keeps the runtime outside
+            # the lifted code, as without a profile; the profile's inlining and block layout stay.
+            flags += ['-mllvm', '-profile-guided-section-prefix=false']
+            LINK_FLAGS.append('-Wl,--call-graph-profile-sort=none')
     GEN_FLAGS.extend(flags + PGO_NAMES)
     RT_FLAGS.extend(flags + PGO_NAMES)
 if WIN:
@@ -366,7 +382,7 @@ def runtime_sources(skip=()):
     """Every runtime/*.c, *.cpp, platform/*.c, *.rc, the in-game menu (ui/*.cpp) and Dear ImGui of this OS except the
     names in skip, so a task adds a file without editing this script."""
     pats = ('*.c', '*.cpp', 'platform/*.c', '*.rc', 'ui/*.cpp', 'third_party/imgui/*.cpp',
-            'third_party/imgui/backends/*.cpp', 'third_party/bc7enc/*.cpp')
+            'third_party/imgui/backends/*.cpp')
     return sorted(p for pat in pats for p in RUNTIME.glob(pat) if p.name not in skip and not other_os(p.name))
 
 
@@ -1109,7 +1125,7 @@ def main():
                      'an llvm-mingw directory')
         set_pgo(args.pgo, out)
     elif args.gen_o2:
-        GEN_FLAGS[GEN_FLAGS.index('-O1')] = '-O2'
+        gen_o2()
     extracted = None if args.exefs and args.romfs else work_dir() / 'extracted' / args.version
     paths = {'exefs': (args.exefs or extracted / 'exefs').resolve(),
              'romfs': (args.romfs or extracted / 'romfs').resolve(),

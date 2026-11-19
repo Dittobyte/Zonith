@@ -143,10 +143,6 @@ Many rows below are developer tools that only act together with another setting 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `amd_preset` (default `0`) | `1` turns the recorder thread off and decodes ASTC on the CPU, for keys the player left unset. | Slower, chosen after device-lost reports on RDNA 2. | Caution |
-| `bc7` (default on) | `0` turns the BC7 texture cache off. | ASTC textures decode to RGBA8 again and take more memory. | Safe |
-| `bc7_dir` (default `bc7`) | Folder of the BC7 cache's `bc7.pack` and `bc7.idx`, next to the exe unless absolute. | Another folder starts an empty cache. | Safe |
-| `bc7_quality` (default `0`) | bc7enc uber level of textures encoded in game; the build step uses 2. | Higher values cost more CPU. | Caution |
-| `bc7_threads` | Threads of the background BC7 encoder. | More threads take CPU from the game. | Caution |
 | `freeze_backoff` (default `1`) | `0` makes every region wait `freeze_idle` submissions, without doubling the wait for regions that thaw soon. | More freeze and thaw cycles, each a fault and two page protection calls. | Caution |
 | `freeze_shadow` (default `1`) | `0` keeps shadow syncs from putting idle regions up for freezing. | More write-watch queries per frame. | Caution |
 | `wb_invalidate` (default `1`) | `0` keeps write-back snapshots of images the game overwrote. | Those snapshots write stale texels back. | Risky |
@@ -245,6 +241,7 @@ These names are code patch sets built into the generated game code (`recomp/patc
 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
+| `interval_hold` (default `1`) | `0` lets the game's present-interval controller raise its interval again when a frame does not fit one 60 Hz tick (1.4.3). At interval 2 the game waits inside its own frame and runs at 60 fps for seconds whatever the frame limit. Needs the real-time step and a limit other than 30. | Above 60 fps a slow frame is followed by seconds at 60 fps when it is `0`. | Safe |
 | `heropath_realtime` (default `1`) | `0` steps the map's Hero's Path replay per frame again, so it runs faster at a higher frame rate. | Only the replay's speed changes. | Safe |
 | `climb_fix` (default `1`) | Above 60 fps, raises the climb controller's speed factor so Link climbs walls and ladders at full speed. `0` keeps the game's factor, which slows climbing as the frame rate rises. Needs `realtime`; off without it. | At 60 fps or below, or in slow motion, the game's own factor is kept bit for bit. | Safe |
 | `ability_guard` (default `1`) | Patch set that checks the target a Recall or Ultrahand pick hands to the game (1.4.3 main+0x1bd01c4, 1.2.1 main+0x1622bf0) and drops it for that frame where the game's own code would fault on it: the holder, the actor or its component unreadable, or the word the game's reference writes not writable (`runtime/ov_ability.c`). Every other target goes on unchanged; a target that fails UltraTears' live-actor test is only logged (`ability: target kept although ...`). | `0` runs the game's code as shipped: the random crash reading `0xffffffffffffffff` during an ability pick can return. | Risky |

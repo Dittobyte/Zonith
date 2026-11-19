@@ -6,7 +6,6 @@
  "step.lift": "将游戏代码转换为 C 代码",
  "step.compile": "编译 {game_exe}",
  "step.prepare": "准备着色器",
- "step.textures": "为此显卡重新编码纹理",
  "step.pc_prompts": "绘制键盘和鼠标按键提示",
  "step.shapes": "为你的显示器调整游戏画面布局",
  "step.dlss": "下载 NVIDIA DLSS",
@@ -41,7 +40,6 @@
  "phase.prepare.pack": "将着色器缓存打包成一个文件",
  "phase.shapes.layouts": "为每种显示器比例写入画面布局和按键提示",
  "phase.dlss.download": "从 NVIDIA 的 DLSS SDK 下载 nvngx_dlss.dll",
- "phase.textures.encode": "将游戏的 ASTC 纹理编码为 BC7（仅一次，需要一些时间）",
  "phase.cleanup.ini": "写入 totk.ini",
  "phase.cleanup.temp": "删除临时文件",
 
@@ -120,7 +118,6 @@
  "warn.kernel_old": "Linux {version} 缺少游戏依赖的写入跟踪功能（需要 6.7 或更新版本）；游戏可能运行得很慢。更新系统即可解决。",
  "warn.dlss_kept": "安装文件夹中已有 DLSS 库（{path}）；安装程序将保留它。",
  "warn.dlss_download_failed": "无法从 {url} 下载 NVIDIA DLSS：{detail}。游戏无需它也能运行；下次运行安装程序时会重试。",
- "warn.textures_failed": "无法生成纹理缓存（退出代码 {code}；详情：{log}）。游戏照常解码纹理；下次运行安装程序时会重试。",
 
  "ui.title": "Zonith 安装程序",
  "ui.rebuild_title": "正在为你的模组重新构建游戏",

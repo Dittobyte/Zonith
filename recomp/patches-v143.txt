@@ -1223,3 +1223,15 @@ hook main 585bd0
 # fps_limit 240, same save and input script: sound in 2 of 118 s with the set off, in 110 of 119 s with it on.
 set audiodrain TOTK_AUDIO_DRAIN_FIX 1
 site audiodrain main 149244 17fffe34 f9400268 17fffe2a   # b 0x148b14 -> ldr x8, [x19]; b 0x148aec
+
+# Interval hold. The present-interval controller (main+0x2db174, the set fps60 above) raises the interval to 2 when
+# the measured frame does not fit one 60 Hz tick and lowers it again seconds later. The pacer and the real-time step
+# ignore the interval (nvn_api_obj.c present_period), but at interval 2 the game itself waits inside its frame and
+# runs at 60 fps whatever the limit, so above 60 fps one slow frame costs seconds at 60. The site makes the
+# controller's wanted interval 1 before its clamps: w9 = min(measured, maximum) becomes w9 = 1, and the fps60 clamp
+# after it then gives w10 = 1. Needs fps60 and the real-time step: frame_rate.c switches the set off without them (the
+# limit 30 keeps the shipping interval 2). The observation and the hold are UltraTears' (kuraeow/ultratears 9455e9b,
+# TOTK_MAX_INTERVAL, which clamps the controller's state from its nvnWindowSetPresentInterval); GPL-3.0 there, see
+# THIRD_PARTY_NOTICES.md.
+set interval TOTK_INTERVAL_HOLD  1
+site interval main 2db200 1a89a569 52800029   # csinc w9, w11, w9, ge -> mov w9, #1

@@ -647,9 +647,11 @@ static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
     nvn_hm_put(&copy_live, &handle, pf);
     ncopies++;
     copy_bytes += pf->bytes;
-    if (++copies_made % 20000 == 0)
-        NVN_LOG("recording copies: %llu made, %llu live, %.1f MiB, submit %llu", (unsigned long long)copies_made,
-                (unsigned long long)ncopies, copy_bytes / 1048576.0, (unsigned long long)nsubmits);
+    // A copy lives until its control memory is added again (release_copies): the live count shows copies the game
+    // never comes back to, which would stay for the whole session. With TOTK_TRACE=perf too, to read it off a timing run.
+    if (++copies_made % 20000 == 0 && (rt_trace & (RT_TRACE_GFX | RT_TRACE_PERF)))
+        rt_log("nvn: recording copies: %llu made, %llu live, %.1f MiB, submit %llu", (unsigned long long)copies_made,
+               (unsigned long long)ncopies, copy_bytes / 1048576.0, (unsigned long long)nsubmits);
     plat_mutex_unlock(&copy_lock);
 }
 

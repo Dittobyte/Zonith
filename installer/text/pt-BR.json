@@ -6,7 +6,6 @@
  "step.lift": "Traduzindo o código do jogo para C",
  "step.compile": "Compilando o {game_exe}",
  "step.prepare": "Preparando os shaders",
- "step.textures": "Recodificando as texturas para esta placa de vídeo",
  "step.pc_prompts": "Desenhando os ícones de teclado e mouse",
  "step.shapes": "Ajustando as telas do jogo aos seus monitores",
  "step.dlss": "Baixando o NVIDIA DLSS",
@@ -41,7 +40,6 @@
  "phase.prepare.pack": "Juntando o cache de shaders num único arquivo",
  "phase.shapes.layouts": "Gravando os layouts de tela e os botões para cada formato de monitor",
  "phase.dlss.download": "Baixando o nvngx_dlss.dll do DLSS SDK da NVIDIA",
- "phase.textures.encode": "Codificando as texturas ASTC do jogo em BC7 (uma vez; leva um tempo)",
  "phase.cleanup.ini": "Gravando o totk.ini",
  "phase.cleanup.temp": "Removendo os arquivos temporários",
 
@@ -120,7 +118,6 @@
  "warn.kernel_old": "O Linux {version} não tem o rastreamento de escrita de que o jogo depende (6.7 ou mais novo); o jogo pode rodar muito devagar. Atualizar o sistema resolve.",
  "warn.dlss_kept": "Já existe uma biblioteca DLSS na pasta de instalação ({path}); a instalação a mantém.",
  "warn.dlss_download_failed": "Não foi possível baixar o NVIDIA DLSS de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
- "warn.textures_failed": "Não foi possível criar o cache de texturas (código de saída {code}; detalhes: {log}). O jogo decodifica as texturas como antes; a próxima execução da instalação tenta de novo.",
 
  "ui.title": "Instalação do Zonith",
  "ui.rebuild_title": "Recompilando o jogo para os seus mods",
