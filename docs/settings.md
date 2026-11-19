@@ -143,10 +143,6 @@ Many rows below are developer tools that only act together with another setting 
 | Setting | What it does | Effect of changing it | Safety |
 | --- | --- | --- | --- |
 | `amd_preset` (default `0`) | `1` turns the recorder thread off and decodes ASTC on the CPU, for keys the player left unset. | Slower, chosen after device-lost reports on RDNA 2. | Caution |
-| `bc7` (default on) | `0` turns the BC7 texture cache off. | ASTC textures decode to RGBA8 again and take more memory. | Safe |
-| `bc7_dir` (default `bc7`) | Folder of the BC7 cache's `bc7.pack` and `bc7.idx`, next to the exe unless absolute. | Another folder starts an empty cache. | Safe |
-| `bc7_quality` (default `0`) | bc7enc uber level of textures encoded in game; the build step uses 2. | Higher values cost more CPU. | Caution |
-| `bc7_threads` | Threads of the background BC7 encoder. | More threads take CPU from the game. | Caution |
 | `freeze_backoff` (default `1`) | `0` makes every region wait `freeze_idle` submissions, without doubling the wait for regions that thaw soon. | More freeze and thaw cycles, each a fault and two page protection calls. | Caution |
 | `freeze_shadow` (default `1`) | `0` keeps shadow syncs from putting idle regions up for freezing. | More write-watch queries per frame. | Caution |
 | `wb_invalidate` (default `1`) | `0` keeps write-back snapshots of images the game overwrote. | Those snapshots write stale texels back. | Risky |

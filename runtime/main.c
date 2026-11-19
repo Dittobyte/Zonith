@@ -28,7 +28,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "bc7.h"
 #include "cfg.h"
 #include "host.h"
 #include "layout.h"
@@ -666,7 +665,7 @@ static int usage(const char *argv0) {
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
-                    "--prepare-shaders | --warm-shaders | --bc7-build | --boot | --plugin-init DIR | --seconds S [--shot PNG]]\n", argv0);
+                    "--prepare-shaders | --warm-shaders | --boot | --plugin-init DIR | --seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -811,7 +810,6 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-movie")) return probe_movie();
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
-    if (!strcmp(mode, "--bc7-build")) { fs_init(); return bc7_build(); }   // the BC7 texture cache (bc7_cache.c)
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
     if (!strcmp(mode, "--plugin-init")) { rt_boot_plugin_init(); return 0; }
     return usage(argv[0]);
