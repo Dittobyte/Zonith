@@ -113,7 +113,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q make pkg-config xvfb xauth fonts-dejavu-core file desktop-file-utils
-          python -m venv .venv && .venv/bin/pip -q install pillow
+          python -m venv .venv && .venv/bin/pip -q install pillow lz4
       - name: Reference checkouts
         run: sh tools/fetch_refs.sh
       - name: Generated headers and execution profile
