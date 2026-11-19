@@ -1,19 +1,25 @@
 name: Release
 
-# Builds the Windows zip and the Linux AppImage of main and makes the GitHub release (tools/release.py). The build
-# compiles against a lifted game version, which never leaves the machine with the player's own game files, so this runs
-# only on a self-hosted runner there, labelled "zonith-release", whose environment sets ZONITH_CHECKOUT to the checkout
-# that holds generated/, refs/, toolchain/ and the venvs (docs/releasing.md).
+# Builds the Windows setup zip and the Linux AppImage on GitHub's runners and makes the GitHub release
+# (docs/releasing.md). No game files are needed: the release carries the setup and a toolchain, the player's machine
+# lifts and compiles the game. The runtime library reads three small generated headers, which tools/release_seed.py
+# writes from the module sizes it lists and recomp/patches-<version>.txt. The execution profile comes from the latest
+# published release (tools/release_pgo.py).
+#
+# Run it from Actions with the notes. Without "publish" the run only builds and keeps the two files as artifacts; with
+# it, the release is made as a draft, both files are attached, their sizes are checked on GitHub, and only then is it
+# published, which creates the tag v<VERSION> on the commit that was built.
 on:
   workflow_dispatch:
     inputs:
       notes:
         description: "Release notes (Markdown: Added / Changed / Fixed one-liners)"
         required: true
+        default: "See the commits since the last release."
       publish:
-        description: "Publish once every asset is attached (off: leave a draft)"
+        description: "Publish the release (off: build only)"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
@@ -22,22 +28,127 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+
 jobs:
-  release:
-    runs-on: [self-hosted, windows, zonith-release]
-    timeout-minutes: 240
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - name: Build and release
-        shell: pwsh
+      - id: v
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTES: ${{ inputs.notes }}
+          GH_TOKEN: ${{ github.token }}
           PUBLISH: ${{ inputs.publish }}
         run: |
-          $notes = Join-Path $env:RUNNER_TEMP 'release-notes.md'
-          Set-Content -Path $notes -Value $env:NOTES -Encoding utf8
-          $args = @('tools/release.py', '--notes', $notes)
-          if ($env:PUBLISH -eq 'true') { $args += '--publish' }
-          & "$env:ZONITH_CHECKOUT\.venv\Scripts\python.exe" @args
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          v=$(cat VERSION)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ "$PUBLISH" = true ]; then
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "::error::a release publishes from main only (this run: $GITHUB_REF)"; exit 1; }
+            if gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$v" --jq '.[].ref' | grep -qx "refs/tags/v$v"; then
+              echo "::error::tag v$v exists: bump VERSION first"; exit 1
+            fi
+          fi
+
+  windows:
+    needs: version
+    runs-on: windows-2025
+    timeout-minutes: 240
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: astral-sh/setup-uv@v6
+      - name: MSYS2 UCRT64 packages
+        shell: pwsh
+        run: |
+          C:\msys64\usr\bin\bash.exe -lc "pacman -Syuu --noconfirm; pacman -Syuu --noconfirm"
+          C:\msys64\usr\bin\bash.exe -lc "pacman -S --needed --noconfirm mingw-w64-ucrt-x86_64-{clang,lld,ninja,gcc,make,pkgconf,cmake,zstd} make git unzip"
+          "C:\msys64\ucrt64\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Python environments
+        run: |
+          uv venv --python 3.12 .venv && uv pip install --python .venv/Scripts/python.exe -r tools/requirements.txt
+          uv venv --python 3.14 .venv-py314 && uv pip install --python .venv-py314/Scripts/python.exe -r tools/requirements-py314.txt
+      - name: Reference checkouts
+        run: sh tools/fetch_refs.sh
+      - name: Generated headers and execution profile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .venv/Scripts/python tools/release_seed.py --version v143 && .venv/Scripts/python tools/release_pgo.py
+      - name: hactool and the shader translator
+        run: |
+          .venv/Scripts/python tools/build_hactool.py
+          .venv/Scripts/python tools/build_xlate.py
+      - name: Release folder and zip
+        run: .venv-py314/Scripts/python tools/make_release.py --out build/release/TotK-Setup-windows --zip "build/release/TotK-Setup-${{ needs.version.outputs.version }}-windows.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: build/release/TotK-Setup-*-windows.zip
+          compression-level: 0
+          if-no-files-found: error
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: "1"   # appimagetool runs without FUSE on the runner
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Packages
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q make pkg-config xvfb xauth fonts-dejavu-core file desktop-file-utils
+          python -m venv .venv && .venv/bin/pip -q install pillow
+      - name: Reference checkouts
+        run: sh tools/fetch_refs.sh
+      - name: Generated headers and execution profile
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .venv/bin/python tools/release_seed.py --version v143 && .venv/bin/python tools/release_pgo.py
+      - name: Release folder and AppImage
+        run: xvfb-run -a .venv/bin/python tools/make_release_linux.py --out build/release/TotK-Setup-linux --appimage build/release/TotK-Setup-x86_64.AppImage --pgo
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: build/release/TotK-Setup-x86_64.AppImage
+          compression-level: 0
+          if-no-files-found: error
+
+  publish:
+    if: inputs.publish
+    needs: [version, windows, linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Draft, attach, check, publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ inputs.notes }}
+          V: ${{ needs.version.outputs.version }}
+        run: |
+          printf '%s\n' "$NOTES" > notes.md
+          gh release create "v$V" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" --title "Zonith $V" --notes-file notes.md assets/*
+          for f in assets/*; do
+            n=$(basename "$f"); want=$(stat -c %s "$f")
+            got=$(gh release view "v$V" -R "$GITHUB_REPOSITORY" --json assets --jq ".assets[] | select(.name == \"$n\") | .size")
+            [ "$got" = "$want" ] || { echo "::error::$n: GitHub lists '$got' bytes, built $want; the release stays a draft"; exit 1; }
+          done
+          gh release edit "v$V" -R "$GITHUB_REPOSITORY" --draft=false
