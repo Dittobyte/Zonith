@@ -666,8 +666,7 @@ static int usage(const char *argv0) {
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-playtime | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-crash-call | --probe-crash-null | --probe-discord | "
-                    "--prepare-shaders | --warm-shaders | --bc7-build | --boot | --plugin-init DIR | --seconds S [--shot PNG]]
-", argv0);
+                    "--prepare-shaders | --warm-shaders | --bc7-build | --boot | --plugin-init DIR | --seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
