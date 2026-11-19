@@ -843,6 +843,64 @@ class BaseGameCheckTest(unittest.TestCase):
         self.assertEqual(steps.program_nca(records)[0]['title_id'], self.BASE)
 
 
+class ReplacedFolderTest(unittest.TestCase):
+    """An install folder inside a folder that a newer setup replaces: the setup's own release folder, or the Recompia
+    launcher's folder of setups, which starts the setup from <zonith>/<tag>/ so the pickers opened there."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        self.release = self.dir / 'TotK-Setup-windows'
+        self.release.mkdir()
+        self.launcher = self.dir / 'Recompia' / 'zonith'
+        (self.launcher / 'v0.5.0' / 'TotK-Setup-windows').mkdir(parents=True)
+        (self.launcher / 'current.json').write_text('{"tag": "v0.5.0"}', encoding='utf-8')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def layout(self, dev=False):
+        return SimpleNamespace(root=self.release, dev=dev, missing=lambda cpu='v3': [])
+
+    def test_inside_the_release_folder(self):
+        for dest in (self.release, self.release / 'TotK', self.release / 'a' / 'b'):
+            self.assertEqual(layouts.replaced_folder(self.layout(), dest), self.release)
+
+    def test_a_checkout_is_not_a_setup_folder(self):
+        self.assertIsNone(layouts.replaced_folder(self.layout(dev=True), self.release / 'build' / 'install-test'))
+
+    def test_inside_the_launcher_folder(self):
+        for dest in (self.launcher, self.launcher / 'TotK', self.launcher / 'v0.5.0' / 'TotK-Setup-windows' / 'TotK'):
+            self.assertEqual(layouts.replaced_folder(None, dest), self.launcher)
+
+    def test_a_zonith_folder_without_current_json_is_the_player_own(self):
+        own = self.dir / 'Games' / 'zonith'
+        own.mkdir(parents=True)
+        self.assertIsNone(layouts.replaced_folder(self.layout(), own / 'TotK'))
+
+    def test_beside_the_folders(self):
+        for dest in (self.dir / 'TotK', self.dir / 'Recompia' / 'TotK', self.dir / 'TotK-Setup-windows-2'):
+            self.assertIsNone(layouts.replaced_folder(self.layout(), dest))
+
+    def ctx(self, dest, mode, lang='en-US'):
+        return SimpleNamespace(layout=self.layout(), reporter=None, dest=dest, mode=mode, temp=dest / 'build-cache' / 'work',
+                               options=SimpleNamespace(firmware=None, lang=lang), state={})
+
+    def test_the_check_refuses_a_new_install(self):
+        dest = self.launcher / 'TotK'
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Check().run(self.ctx(dest, 'install'))
+        self.assertEqual(e.exception.id, 'check.dest_replaced')
+        self.assertEqual(e.exception.params, {'path': str(dest), 'folder': str(self.launcher)})
+
+    def test_the_check_keeps_an_earlier_install_there(self):
+        # updating it and its rebuild for mods go on: the check passes the folder and stops later, at the unknown
+        # language this context names
+        with self.assertRaises(steps.InstallError) as e:
+            steps.Check().run(self.ctx(self.launcher / 'TotK', 'update', lang='xx'))
+        self.assertEqual(e.exception.id, 'check.lang_unknown')
+
+
 class ShapesTest(unittest.TestCase):
     """installer/screens.py and the shapes step: one folder per screen shape, only for the displays and the prompts
     style this player has (runtime/cfg.c cfg_shape_size maps the game resolution the same way)."""

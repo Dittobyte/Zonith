@@ -38,7 +38,8 @@ from . import ini
 from . import layout as layouts
 from . import recent
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+                       Process, amount, default_game_language, describe_event, parse_line, picker_folder,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -344,7 +345,7 @@ class App:
     def form(self):
         return Form(base=self.vars['base'].get(), update=self.vars['update'].get(), keys=self.vars['keys'].get(),
                     firmware=self.vars['firmware'].get(), lang=self.selected_lang(), dest=self.vars['dest'].get(),
-                    dlss=self.dlss_var.get())
+                    dlss=self.dlss_var.get(), layout=self.layout)
 
     def set_prefill(self, name, value):
         self.programmatic = True
@@ -389,17 +390,20 @@ class App:
         types = [(self.cat('ui.type_game'), '*.nsp *.xci *.nsz *.xcz'), (self.cat('ui.type_all'), '*.*')]
         if name == 'keys':
             types = [(self.cat('ui.type_keys'), '*.keys'), (self.cat('ui.type_all'), '*.*')]
-        path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types)
+        path = filedialog.askopenfilename(title=self.cat(pick_id), filetypes=types,
+                                          initialdir=picker_folder(self.vars[name].get(), self.layout))
         if path:
             self.vars[name].set(os.path.normpath(path))
 
     def pick_firmware(self):
-        path = filedialog.askdirectory(title=self.cat('ui.pick_firmware'), mustexist=True)
+        path = filedialog.askdirectory(title=self.cat('ui.pick_firmware'), mustexist=True,
+                                       initialdir=picker_folder(self.vars['firmware'].get(), self.layout))
         if path:
             self.vars['firmware'].set(os.path.normpath(path))
 
     def pick_dest(self):
-        path = filedialog.askdirectory(title=self.cat('ui.pick_dest'), mustexist=False)
+        path = filedialog.askdirectory(title=self.cat('ui.pick_dest'), mustexist=False,
+                                       initialdir=picker_folder(self.vars['dest'].get(), self.layout))
         if path:
             self.vars['dest'].set(os.path.normpath(path))
 

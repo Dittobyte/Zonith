@@ -230,6 +230,30 @@ def temp_folder(base, dest):
     return base / f'{dest.name or "root"}-{tag}'
 
 
+LAUNCHER_DIR = 'zonith'            # the Recompia launcher's folder of setups: one folder per release tag
+LAUNCHER_CURRENT = 'current.json'  # beside them, naming the one the launcher starts
+
+
+def replaced_folder(layout, dest):
+    """The folder holding dest that a newer setup replaces, deleting a game installed there, or None.
+
+    - The release folder of the running setup (Windows; the Linux AppImage is mounted read-only): the player unpacks
+      the next release over it or deletes it, which docs/installer.md says is safe after an install.
+    - The Recompia launcher's folder of setups, a `zonith` folder with current.json: the launcher unpacks every
+      setup into a folder per release tag there and starts it from it, so the folder pickers used to open in it, and
+      it removes the older tags when it updates the setup.
+
+    A repository checkout (dev mode) is not a setup folder: its test installs live in build/."""
+    dest = Path(os.path.abspath(dest))
+    root = None if layout is None or layout.dev else Path(os.path.abspath(layout.root))
+    for folder in (dest, *dest.parents):
+        if root is not None and folder == root:
+            return folder
+        if folder.name.lower() == LAUNCHER_DIR and (folder / LAUNCHER_CURRENT).is_file():
+            return folder
+    return None
+
+
 def temp_for(layout, dest, override=None):
     """The temp folder of a run on dest: below --temp or the layout's, else TEMP_IN_DEST in the install folder."""
     base = override or layout.temp
