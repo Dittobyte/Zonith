@@ -122,7 +122,7 @@
  "warn.dlss_download_failed": "无法从 {url} 下载 NVIDIA DLSS：{detail}。游戏无需它也能运行；下次运行安装程序时会重试。",
  "warn.textures_failed": "无法生成纹理缓存（退出代码 {code}；详情：{log}）。游戏照常解码纹理；下次运行安装程序时会重试。",
 
- "ui.title": "TotK 安装程序",
+ "ui.title": "Zonith 安装程序",
  "ui.rebuild_title": "正在为你的模组重新构建游戏",
  "ui.start_game": "启动游戏",
  "ui.version": "版本 {version}",
@@ -199,7 +199,7 @@
  "param.input.update": "更新",
  "param.input.keys": "密钥",
 
- "launcher.title": "TotK 安装程序",
+ "launcher.title": "Zonith 安装程序",
  "launcher.python_missing": "安装文件不完整：TotK-Setup.exe 旁边缺少 python 文件夹。请重新解压整个压缩包，然后从解压出的文件夹中启动 TotK-Setup.exe。",
 
  "lang.ja": "日语",

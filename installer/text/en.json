@@ -122,7 +122,7 @@
  "warn.dlss_download_failed": "NVIDIA DLSS could not be downloaded from {url}: {detail}. The game runs without it; the next setup run tries again.",
  "warn.textures_failed": "The texture cache could not be built (exit code {code}; details: {log}). The game decodes textures as before; the next setup run tries again.",
 
- "ui.title": "TotK Setup",
+ "ui.title": "Zonith Setup",
  "ui.rebuild_title": "Rebuilding the game for your mods",
  "ui.start_game": "Start the game",
  "ui.version": "version {version}",
@@ -199,7 +199,7 @@
  "param.input.update": "update",
  "param.input.keys": "keys",
 
- "launcher.title": "TotK Setup",
+ "launcher.title": "Zonith Setup",
  "launcher.python_missing": "The setup files are incomplete: the python folder next to TotK-Setup.exe is missing. Unpack the whole archive again and start TotK-Setup.exe from the unpacked folder.",
 
  "lang.ja": "Japanese",

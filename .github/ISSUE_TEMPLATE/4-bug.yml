@@ -32,7 +32,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: The title line of the settings menu (F1), for example "TotK Recomp 0.1.0, game 1.4.3". For the installer, the version of TotK-Setup.
+      description: The title line of the settings menu (F1), for example "Zonith 0.4.1, game 1.4.3". For the installer, the version of TotK-Setup.
     validations:
       required: true
   - type: input

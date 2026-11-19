@@ -122,7 +122,7 @@
  "warn.dlss_download_failed": "Não foi possível baixar o NVIDIA DLSS de {url}: {detail}. O jogo funciona sem ele; a próxima execução da instalação tenta de novo.",
  "warn.textures_failed": "Não foi possível criar o cache de texturas (código de saída {code}; detalhes: {log}). O jogo decodifica as texturas como antes; a próxima execução da instalação tenta de novo.",
 
- "ui.title": "Instalação do TotK",
+ "ui.title": "Instalação do Zonith",
  "ui.rebuild_title": "Recompilando o jogo para os seus mods",
  "ui.start_game": "Iniciar o jogo",
  "ui.version": "versão {version}",
@@ -199,7 +199,7 @@
  "param.input.update": "atualização",
  "param.input.keys": "chaves",
 
- "launcher.title": "Instalação do TotK",
+ "launcher.title": "Instalação do Zonith",
  "launcher.python_missing": "Os arquivos de instalação estão incompletos: a pasta python ao lado do TotK-Setup.exe não existe. Extraia o arquivo compactado inteiro de novo e abra o TotK-Setup.exe a partir da pasta extraída.",
 
  "lang.ja": "Japonês",
