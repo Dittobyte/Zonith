@@ -18,7 +18,19 @@ Each game version has its own profile, `pgo-v121.profdata` and `pgo-v143.profdat
   another `recomp/` tree than the one released, or a header digest differs. The runtime libraries of the release
   compile with the newest version's profile.
 - The installer builds a player's game with `data\pgo-<ver>.profdata` when the release has one for that version, and
-  at -O1 without it.
+  without a profile otherwise. `TOTK_PGO=0` in the installer's environment builds without the profile even when
+  there is one, to compare the two builds on one machine.
+- Linux uses the same profiles: clang matches a function by its name and the shape of its control flow, which the
+  generated C has on both systems, so a profile trained on Windows fits the Linux build of the same code. A Linux
+  release carries them when it is made with `make_release_linux.py --pgo`; a build from source on Linux takes
+  `build/pgo/pgo-<ver>.profdata` (the installer run from the checkout, or `build_game.py --pgo`), and its runtime
+  library takes the same file (`build_game.py --make-runtime-lib --pgo <file>`).
+- On Linux a profile build keeps one `.text` in link input order (`build_game.py`, `set_pgo`): with the profile
+  clang sorts functions into hot and cold sections and the linker orders the program by its call graph, which puts
+  runtime functions inside the lifted code's address range. The log line `kernel: asynchronous preemption off: the
+  lifted code range ... holds host code` means that happened.
+- `TOTK_PGO_WARN=1` in the environment of `build_game.py --pgo <file>` leaves clang's warnings on: one `hash
+  mismatch` line per function the profile no longer fits. Count them after a change to see what a profile lost.
 
 A profile only fits the code it was trained on. clang matches each function by name and control-flow hash, and a
 function whose code changed loses its counts without a warning (`build_game.py` passes `-Wno-backend-plugin`, which

@@ -12,8 +12,8 @@ Release (docs/installer.md "Release layout"), root = the unpacked folder:
                             include/ + lib/ of Vulkan, SDL3, Opus, libvpx and VMA (build_game.py --deps)
     bin/                    totk_xlate.exe (+ totk_xlate.id), hactool.exe, ninja.exe, SDL3.dll, libopus-0.dll
     data/shader_list.tsv    the MacNativeGames shader list
-    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py; Windows only);
-                            without one the game is built at -O1
+    data/pgo-<v>.profdata   the execution profile the update's code is compiled with (tools/pgo.py);
+                            without one the game is built without a profile
     totk.ini.example
     VERSION                 the release version, one line
 
@@ -84,7 +84,7 @@ class Layout:
     temp: Path | None = None
     sysroot: Path | None = None       # Linux release: what the game links against, instead of the host's
     runtime_lib_v2: Path | None = None   # libtotkrt-v2.a: the runtime for CPUs without AVX2 (build_game.py --cpu v2)
-    pgo_dir: Path | None = None       # pgo-<v>.profdata (tools/pgo.py); None: no profiles (Linux)
+    pgo_dir: Path | None = None       # pgo-<v>.profdata (tools/pgo.py); None: no profiles
 
     @property
     def clang(self):
@@ -99,8 +99,10 @@ class Layout:
         return None if self.dev else lib
 
     def pgo(self, version):
-        """The execution profile build_game.py --pgo compiles the update's code with, None without one (the game is
-        then built at -O1)."""
+        """The execution profile build_game.py --pgo compiles the update's code with, None without one or with
+        TOTK_PGO=0 in the environment (the game is then built without a profile, for comparing the two builds)."""
+        if os.environ.get('TOTK_PGO') == '0':
+            return None
         p = self.pgo_dir / f'pgo-{version_tag(version)}.profdata' if self.pgo_dir else None
         return p if p and p.is_file() else None
 
@@ -154,7 +156,7 @@ def release_layout(root):
         xlate=root / 'bin' / ('totk_xlate' + EXE),
         dlls=(root / 'bin' / 'SDL3.dll', root / 'bin' / 'libopus-0.dll') if WIN else (root / 'bin' / 'libSDL3.so.0',),
         shader_list=root / 'data' / 'shader_list.tsv', ini_example=root / 'totk.ini.example',
-        pgo_dir=root / 'data' if WIN else None,
+        pgo_dir=root / 'data',   # Linux releases carry profiles only when built with make_release_linux.py --pgo
         # None: the install folder's TEMP_IN_DEST (temp_for). Windows: the rebuild's working state stays with the install
         # and its build kit. Linux: the AppImage is mounted read-only, and on a Steam Deck /home is often too full for
         # the generated C while the install folder is on the SD card
@@ -201,7 +203,8 @@ def dev_layout_posix(root):
         runtime_lib_v2=root / 'build' / 'install-rtlib' / 'libtotkrt-v2.a',
         ninja=Path(ninja) if ninja else root / 'toolchain' / 'ninja-missing',
         hactool=root / 'toolchain' / 'hactool' / 'hactool', xlate=root / 'build' / 'xlate' / 'totk_xlate',
-        shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp')
+        shader_list=None, ini_example=root / 'totk.ini.example', temp=root / 'build' / 'install-temp',
+        pgo_dir=root / 'build' / 'pgo')
 
 
 def find(root=None):
