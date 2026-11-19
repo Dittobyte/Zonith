@@ -1092,8 +1092,8 @@ static void upload_cpu(Tex *e) {
 #define DESWZ_CHUNK (32ull << 20)
 
 // Uploads by path since the last perf summary (TOTK_TRACE=perf): 0 GPU, else why the CPU took it.
-enum { UP_GPU, UP_MODE, UP_LINEAR, UP_RGB, UP_ASTC_CPU, UP_BPB, UP_NOT_LIVE, UP_GEOM, UP_LIMITS, UP_SCRATCH, UP_WHY };
-static const char *const up_why_name[UP_WHY] = {"gpu", "cpu mode", "linear", "rgb", "astc on cpu", "bytes per block",
+enum { UP_GPU, UP_MODE, UP_LINEAR, UP_RGB, UP_BC7, UP_ASTC_CPU, UP_BPB, UP_NOT_LIVE, UP_GEOM, UP_LIMITS, UP_SCRATCH, UP_WHY };
+static const char *const up_why_name[UP_WHY] = {"gpu", "cpu mode", "linear", "rgb", "bc7 cache", "astc on cpu", "bytes per block",
                                                 "not an imported pool", "layout", "device limits", "scratch"};
 static uint64_t up_n[UP_WHY], up_bytes[UP_WHY], up_ns[UP_WHY];
 static int up_why;   // upload_gpu's reason for returning 0 (texture lock held)
@@ -1104,7 +1104,13 @@ static int upload_gpu(Tex *e) {
     const tex_t *t = &e->t;
     const nvn_texdesc *d = &t->d;
     int mode = vk_deswz_mode();
-    up_why = mode == VK_DESWZ_CPU ? UP_MODE : nvn_tex_is_linear(d) ? UP_LINEAR : e->f.expand_rgb ? UP_RGB : UP_GPU;
+    // An ASTC texture the BC7 cache answered (bc7_pick) is a BC7 or BC1 image: its blocks come from the cache in
+    // upload_cpu. The GPU path would decode the ASTC storage and copy RGBA8 texels (or BC3 blocks) into it, which the
+    // image reads as BC7 blocks of random colours; the cache fills while the game runs, so this showed only after a
+    // few minutes of play, on the textures created again since.
+    const int bc7 = e->f.bc7 == BC7_FMT_BC7 || e->f.bc7 == BC7_FMT_BC1;
+    up_why = mode == VK_DESWZ_CPU ? UP_MODE : nvn_tex_is_linear(d) ? UP_LINEAR : e->f.expand_rgb ? UP_RGB
+           : bc7 ? UP_BC7 : UP_GPU;
     if (up_why) return 0;
     int astc = e->f.astc_bw != 0, agpu = astc && vk_astc_gpu();
     if (astc && (!agpu || vk_astc_mode() == VK_ASTC_CHECK)) return up_why = UP_ASTC_CPU, 0;   // or ASTC's check mode
