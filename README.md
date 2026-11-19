@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.0-2fd3b5?labelColor=0b1622" alt="Version 0.5.0">
+  <img src="https://img.shields.io/badge/version-0.5.1-2fd3b5?labelColor=0b1622" alt="Version 0.5.1">
   <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-0078d6?logo=windows&logoColor=white&labelColor=0b1622" alt="Platform: Windows 10/11">
   <img src="https://img.shields.io/badge/platform-Linux%20AppImage-e95420?logo=linux&logoColor=white&labelColor=0b1622" alt="Platform: Linux AppImage">
   <img src="https://img.shields.io/badge/Steam%20Deck%20%2F%20Legion%20Go%20S-native-1a9fff?logo=steamdeck&logoColor=white&labelColor=0b1622" alt="Steam Deck and Legion Go S: native">
