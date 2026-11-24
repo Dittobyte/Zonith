@@ -38,7 +38,8 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
   mods/                          the player's mods, one folder per mod (created by the menu's "Open mods folder")
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
   shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
-  totk-install.json              what built this folder: release version, input hashes, finished steps
+  totk-install.json              what built this folder: release version, whether a setup run finished, input
+                                 hashes, finished steps
   build-kit/                     Windows: the release folder without TotK-Setup.exe (about 0.65 GB); the game's rebuild
                                  for code mods runs the setup window from it
   build-cache/                   what the rebuild built in (cheats.status, exefs.status, plugins.status), rebuild.txt,
@@ -132,6 +133,23 @@ loads the saves 1.4.3 wrote.
    `build-cache/rebuild.txt` in the install folder.
 
 A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
+
+## Starting the game from another program
+
+A program that starts the game for the player (the Recompia launcher does) needs no setup window once the game is
+built. It reads two files and starts the game itself:
+
+1. `dest` in `%LOCALAPPDATA%\TotK Recomp\setup.json` (`$XDG_STATE_HOME/totk-recomp/setup.json` elsewhere,
+   `installer/recent.py`): the install folder the setup last ran on. The window records it when the player presses
+   Start, so the folder may hold an unfinished install.
+2. `totk-install.json` in that folder (`installer/state.py`): `complete` is false from the start of a first install
+   until a run finishes, true from then on; `release` is the release of the last run that finished. A file without
+   `complete` comes from 0.5.1 or older: there the game counts as built when `totk.exe` exists.
+
+With `complete` true (or absent) and `totk.exe` (`totk` on Linux) in the folder, the program starts that file with the
+install folder as the working folder. Otherwise, or when its setup is newer than `release`, it opens the setup window,
+which starts filled in with that folder. These two files, the two entries and the game's file name stay as they are
+across releases.
 
 ## Rebuilding for the mods
 

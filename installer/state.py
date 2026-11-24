@@ -1,6 +1,6 @@
 """totk-install.json in the install folder: what built it and which steps finished.
 
-    {"format": 1, "release": "...", "lang": "en-US",
+    {"format": 1, "release": "...", "complete": true, "lang": "en-US",
      "inputs": {"base": {"name", "size", "sha256"}, "update": {...}},
      "steps": {"<step>": {"key": "<input fingerprint>", "release": "...", "finished": "<UTC time>", "seconds": 12.3,
                           ...the step's own fields}}}
@@ -8,6 +8,12 @@
 A step's key fingerprints everything its output depends on (runner.py), so a step whose recorded key equals the
 current one and whose output still checks out is not run again. The file is replaced atomically after each step.
 No key value or keys file content is ever stored.
+
+"complete" says a setup run on this folder has finished: false from the start of a first install until its first run
+ends well, true from then on, also while a later update or rebuild runs or after it failed (the game of the last
+finished run is still there). "release" is the release of the last run that finished. A file written before the entry
+existed has none. Programs that start the game for the player read both (docs/installer.md, "Starting the game from
+another program").
 """
 import json
 import os
@@ -24,7 +30,7 @@ class StateError(Exception):
 
 
 def empty(release):
-    return {'format': FORMAT, 'release': release, 'inputs': {}, 'steps': {}}
+    return {'format': FORMAT, 'release': release, 'complete': False, 'inputs': {}, 'steps': {}}
 
 
 def load(dest):
