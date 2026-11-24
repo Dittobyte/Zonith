@@ -143,7 +143,8 @@ built. It reads two files and starts the game itself:
    `installer/recent.py`): the install folder the setup last ran on. The window records it when the player presses
    Start, so the folder may hold an unfinished install.
 2. `totk-install.json` in that folder (`installer/state.py`): `complete` is false from the start of a first install
-   until a run finishes, true from then on; `release` is the release of the last run that finished. A file without
+   until a run finishes, true from then on, also after a later run failed (a game was built there once; the setup
+   repairs it); `release` is the release of the last run that finished. A file without
    `complete` comes from 0.5.1 or older: there the game counts as built when `totk.exe` exists.
 
 With `complete` true (or absent) and `totk.exe` (`totk` on Linux) in the folder, the program starts that file with the

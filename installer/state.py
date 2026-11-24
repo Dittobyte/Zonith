@@ -10,8 +10,9 @@ current one and whose output still checks out is not run again. The file is repl
 No key value or keys file content is ever stored.
 
 "complete" says a setup run on this folder has finished: false from the start of a first install until its first run
-ends well, true from then on, also while a later update or rebuild runs or after it failed (the game of the last
-finished run is still there). "release" is the release of the last run that finished. A file written before the entry
+ends well, true from then on, also while a later update or rebuild runs or after it failed (a game was built here
+once; a run that failed after it replaced files can leave it broken until the setup runs again). "release" is the
+release of the last run that finished. A file written before the entry
 existed has none. Programs that start the game for the player read both (docs/installer.md, "Starting the game from
 another program").
 """
