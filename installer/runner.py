@@ -140,6 +140,7 @@ def run_steps(steps, ctx):
             current = None
             s.settle(ctx)
         ctx.state['release'] = ctx.layout.release
+        ctx.state['complete'] = True   # state.py: what a program that starts the game reads
         ctx.save()
         return 'ok'
     except InstallError as e:

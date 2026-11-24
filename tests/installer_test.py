@@ -120,6 +120,28 @@ class RunnerTest(unittest.TestCase):
         done = [e['step'] for e in r.events if e['type'] == 'step' and e['state'] == 'done']
         self.assertEqual((started, done), (ALL, ALL))
 
+    def test_complete_is_false_until_a_run_finishes_and_then_stays(self):
+        r = self.bed.run(fail={'prepare': 'error'})
+        self.assertEqual(r.result, 'failed')
+        self.assertIs(r.state['complete'], False)        # compile ran: the exe exists, the install is not done
+        r = self.bed.run()
+        self.assertEqual(r.result, 'ok')
+        self.assertIs(r.state['complete'], True)
+        r = self.bed.run(release='1.1', inputs={'lift': 'v2'}, fail={'compile': 'error'})
+        self.assertEqual(r.result, 'failed')
+        self.assertIs(r.state['complete'], True)         # a failed update keeps the game of release 1.0
+        self.assertEqual(r.state['release'], '1.0')
+
+    def test_a_state_without_complete_gets_it_from_the_next_finished_run(self):
+        self.bed.run()
+        data = state.load(self.bed.dest)
+        del data['complete']                             # as a release before the entry wrote it
+        state.save(self.bed.dest, data)
+        r = self.bed.run(release='1.1', inputs={'lift': 'v2'}, fail={'compile': 'error'})
+        self.assertNotIn('complete', r.state)
+        r = self.bed.run(release='1.1', inputs={'lift': 'v2'})
+        self.assertIs(r.state['complete'], True)
+
     def test_rerun_skips_finished_steps_and_unneeded_transient(self):
         self.bed.run()
         r = self.bed.run()
